@@ -10,6 +10,7 @@ header span { color: #7c8594; font-size: 10px; }
 .brand-mark { display: grid; width: 34px; height: 34px; border-radius: 10px; place-items: center; box-shadow: 0 5px 13px rgba(15, 118, 110, .22); }
 .brand-mark img { display: block; width: 34px; height: 34px; }
 .launcher-list { display: grid; gap: 8px; }
+.launcher-row { display: grid; grid-template-columns: minmax(0, 1fr) 104px; gap: 8px; }
 .launcher { display: flex; align-items: center; gap: 11px; width: 100%; padding: 12px; border: 1px solid #dfe3ea; border-radius: 11px; background: #fff; color: #273146; cursor: pointer; text-align: left; }
 .launcher:hover { border-color: var(--bft-primary-border); box-shadow: 0 4px 13px rgba(40, 45, 63, .07); }
 .launcher:disabled { cursor: not-allowed; opacity: .46; box-shadow: none; }
@@ -17,8 +18,14 @@ header span { color: #7c8594; font-size: 10px; }
 .launcher > div { display: grid; gap: 2px; }
 .launcher strong { font-size: 13px; }
 .launcher small { color: #7a8494; font-size: 10px; }
+.token-launcher { justify-content: center; gap: 6px; padding: 9px 7px; text-align: center; }
+.token-launcher .launcher-icon { width: 28px; height: 28px; font-size: 14px; }
+.token-launcher > div { justify-items: center; }
+.token-launcher strong { white-space: nowrap; }
+.token-launcher small { font-size: 9px; white-space: nowrap; }
 .popup-status { margin: 9px 0 0; padding: 8px 9px; border-radius: 7px; background: #edf7f1; color: #286847; font-size: 10px; line-height: 1.5; }
 .popup-status.error { background: #fff0f0; color: #a62e3a; }
+.token-status { margin-top: 8px; }
 .catalog-console { margin-top: 10px; padding: 11px; border: 1px solid #dfe3ea; border-radius: 11px; background: #fff; }
 .catalog-console label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 700; }
 .catalog-console input { width: 100%; padding: 9px; border: 1px solid #d9dde5; border-radius: 8px; outline: none; font: inherit; font-size: 11px; }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FlowTemplateV1 } from "../shared/types";
-import { getConditionNodeView, getDelayNodeView } from "./node-adapters";
+import { getActionNodeView, getConditionNodeView, getDelayNodeView } from "./node-adapters";
 
 const template: FlowTemplateV1 = {
   format: "botcake-flow-template",
@@ -34,10 +34,22 @@ const template: FlowTemplateV1 = {
         config: { delayType: "duration", delayUnits: "minutes", delayValue: 1, sendingTimeEnd: 22, sendingTimeStart: 8, useTimeWindow: false },
         defaultGotos: { block_key: "finish", block_type: "message", type: "blocks" },
       },
+      {
+        key: "actions",
+        title: "Action #11",
+        type: "action",
+        action: [
+          { action: "add_tag", action_id: [1065210892] },
+          { action: "remove_tag", action_id: [1065210892] },
+          { action: "block_customer" },
+          { action: "active_bot" },
+        ],
+        defaultGotos: { block_key: "finish", block_type: "message", type: "blocks" },
+      },
     ] },
   },
   inputs: [],
-  dependencies: { botFields: [], media: [], unsupported: [] },
+  dependencies: { botFields: [], tags: [{ name: "B", sourceId: "1065210892" }], media: [], unsupported: [] },
 };
 
 describe("Botcake node adapters", () => {
@@ -63,5 +75,17 @@ describe("Botcake node adapters", () => {
       sendingTimeEnd: 22,
       targetBlockKey: "finish",
     }));
+  });
+
+  it("reads tag, blocking, and portable bot actions", () => {
+    expect(getActionNodeView(template, 2)).toEqual({
+      actions: [
+        expect.objectContaining({ action: "add_tag", label: "添加标签", tagNames: ["B"], portable: true }),
+        expect.objectContaining({ action: "remove_tag", label: "移除标签", tagNames: ["B"], portable: true }),
+        expect.objectContaining({ action: "block_customer", label: "拉黑客户", tagNames: [], portable: true }),
+        expect.objectContaining({ action: "active_bot", label: "开启机器人", tagNames: [], portable: true }),
+      ],
+      targetBlockKey: "finish",
+    });
   });
 });

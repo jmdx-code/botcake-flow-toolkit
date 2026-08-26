@@ -1,6 +1,7 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { MAX_ARCHIVE_FILES, MAX_UNZIPPED_BYTES } from "../shared/constants";
 import type { FlowTemplateV1, LoadedTemplate } from "../shared/types";
+import { walkJson } from "../shared/utils";
 import { assertTemplateContract } from "./template-contract";
 import { flowTemplateSchema } from "./template-schema";
 
@@ -43,9 +44,38 @@ export function loadTemplateArchive(bytes: Uint8Array, sourceName = "template.zi
     throw new Error(`模板结构无效：${issue.path.join(".")} ${issue.message}`);
   }
   const template = result.data as FlowTemplateV1;
+  upgradeLegacyTagDependencies(template);
   assertTemplateContract(template);
   validateReferencedAssets(template, assets);
   return { template, assets, sourceName };
+}
+
+/**
+ * Templates exported before tag migration support recorded every tag_id as an
+ * unsupported page-bound object. A tag condition already carries its portable
+ * name in `label`, so promote that pair to a declared dependency when loading
+ * an old archive and remove only the matching obsolete warning.
+ */
+function upgradeLegacyTagDependencies(template: FlowTemplateV1): void {
+  const tagsBySourceId = new Map((template.dependencies.tags ?? [])
+    .filter((tag) => tag.sourceId != null && tag.name.trim())
+    .map((tag) => [String(tag.sourceId), tag]));
+
+  walkJson(template.flow.post, (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const record = value as Record<string, unknown>;
+    const sourceId = record.tag_id;
+    const name = typeof record.label === "string" ? record.label.trim() : "";
+    if ((typeof sourceId !== "string" && typeof sourceId !== "number") || !name) return;
+    tagsBySourceId.set(String(sourceId), { name, sourceId: String(sourceId) });
+  });
+
+  if (!tagsBySourceId.size) return;
+  template.dependencies.tags = [...tagsBySourceId.values()];
+  template.dependencies.unsupported = template.dependencies.unsupported.filter((item) => {
+    if (item.key !== "tag_id" || !item.reason.includes("标签")) return true;
+    return !tagsBySourceId.has(String(item.value));
+  });
 }
 
 function validateReferencedAssets(template: FlowTemplateV1, assets: Map<string, Uint8Array>): void {

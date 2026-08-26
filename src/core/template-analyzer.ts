@@ -6,6 +6,7 @@ import type {
   MediaDependency,
   MediaKind,
   TemplateInput,
+  TagDependency,
   UnsupportedDependency,
 } from "../shared/types";
 import { deepClone, randomId, walkJson } from "../shared/utils";
@@ -14,12 +15,20 @@ const PLACEHOLDER_RE = /\[\[([A-Za-z0-9_.-]+)\]\]/g;
 const BOT_FIELD_RE = /\{\{(\d+)\/\|([^}]+)\}\}/g;
 
 const UNSUPPORTED_KEYS: Record<string, string> = {
-  tag_id: "标签属于专页对象，当前版本不能可靠迁移",
   custom_field_id: "自定义字段属于专页对象，当前版本不能可靠迁移",
   sequence_id: "序列属于专页对象，当前版本不能可靠迁移",
   product_id: "商品属于专页对象，当前版本不能可靠迁移",
   warehouse_id: "仓库属于专页对象，当前版本不能可靠迁移",
 };
+
+const TAG_ACTIONS = new Set(["add_tag", "remove_tag"]);
+const PORTABLE_ACTIONS = new Set([
+  "block_customer", "active_bot", "deactivate_bot", "sign_follow_bot", "cancel_sign_follow_bot",
+  "mark_acc_seeding", "unmark_acc_seeding", "handover_to_page_inbox", "pass_control_back_to_bot",
+  "report_spam", "mark_unread", "mark_read", "clear_chat_history_ai", "deactivate_gpt", "active_gpt",
+  "active_biz_ai", "deactivate_biz_ai", "hide_comment", "delete_comment", "confirm_latest_order",
+  "cancel_latest_order", "new_subscriber",
+]);
 
 export function analyzeSnapshot(snapshot: FlowSnapshot): FlowTemplateV1 {
   const post = deepClone(snapshot.post);
@@ -29,6 +38,7 @@ export function analyzeSnapshot(snapshot: FlowSnapshot): FlowTemplateV1 {
   const botFields = new Map<string, BotFieldDependency>();
   const media = new Map<string, MediaDependency>();
   const unsupported: UnsupportedDependency[] = [];
+  const tags = collectTagDependencies(post, snapshot.tags ?? [], unsupported);
 
   walkJson(post, (value, path, parent, key) => {
     if (typeof value === "string") {
@@ -118,10 +128,73 @@ export function analyzeSnapshot(snapshot: FlowSnapshot): FlowTemplateV1 {
     inputs,
     dependencies: {
       botFields: [...botFields.values()],
+      tags: [...tags.values()],
       media: [...media.values()],
       unsupported,
     },
   };
+}
+
+function collectTagDependencies(
+  post: Record<string, unknown>,
+  sourceTags: Array<{ id: string | number; name: string }>,
+  unsupported: UnsupportedDependency[],
+): Map<string, TagDependency> {
+  const dependencies = new Map<string, TagDependency>();
+  const namesById = new Map(sourceTags.map((tag) => [String(tag.id), tag.name.trim()]));
+  walkJson(post, (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const tag = value as Record<string, unknown>;
+    if ((typeof tag.tag_id !== "string" && typeof tag.tag_id !== "number") || typeof tag.label !== "string" || !tag.label.trim()) return;
+    namesById.set(String(tag.tag_id), tag.label.trim());
+  });
+  const blocks = Array.isArray(post.blocks) ? post.blocks : [];
+  blocks.forEach((value, blockIndex) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const block = value as Record<string, unknown>;
+    if (String(block.type ?? "").toLocaleLowerCase() === "action") {
+      const actions = Array.isArray(block.action) ? block.action : [];
+      actions.forEach((item, actionIndex) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return;
+        const action = item as Record<string, unknown>;
+        const actionName = String(action.action ?? "");
+        const path = `$.blocks[${blockIndex}].action[${actionIndex}]`;
+        if (TAG_ACTIONS.has(actionName)) {
+          const ids = Array.isArray(action.action_id) ? action.action_id : [action.action_id];
+          ids.filter((id) => typeof id === "string" || typeof id === "number").forEach((id) => {
+            const sourceId = String(id);
+            const name = namesById.get(sourceId);
+            if (!name) {
+              unsupported.push({ path: `${path}.action_id`, key: "action_id", value: id, reason: "标签动作未能根据源专页标签 ID 识别名称" });
+              return;
+            }
+            dependencies.set(sourceId, { name, sourceId });
+          });
+        } else if (!PORTABLE_ACTIONS.has(actionName)) {
+          unsupported.push({ path, key: "action", value: actionName || action, reason: `动作“${actionName || "未知动作"}”可能绑定专页对象，尚未适配` });
+        }
+      });
+    }
+    walkJson(block, (nested, nestedPath) => {
+      if (!nested || typeof nested !== "object" || Array.isArray(nested)) return;
+      const rule = nested as Record<string, unknown>;
+      if (rule.type !== "tags" || !Array.isArray(rule.tags)) return;
+      rule.tags.forEach((tagValue, tagIndex) => {
+        if (!tagValue || typeof tagValue !== "object" || Array.isArray(tagValue)) return;
+        const tag = tagValue as Record<string, unknown>;
+        const rawId = tag.tag_id;
+        const sourceId = typeof rawId === "string" || typeof rawId === "number" ? String(rawId) : undefined;
+        const name = (typeof tag.label === "string" ? tag.label.trim() : "") || (sourceId ? namesById.get(sourceId) ?? "" : "");
+        const path = `$.blocks[${blockIndex}]${nestedPath.slice(1)}.tags[${tagIndex}].tag_id`;
+        if (!sourceId || !name) {
+          unsupported.push({ path, key: "tag_id", value: rawId, reason: "标签条件未能识别标签名称" });
+          return;
+        }
+        dependencies.set(sourceId, { name, sourceId });
+      });
+    });
+  });
+  return dependencies;
 }
 
 function getEntryBlockKey(post: Record<string, unknown>): string | undefined {

@@ -160,9 +160,10 @@ describe("template graph", () => {
     structural.flow.post.blocks = [
       { key: "condition", type: "condition", title: "Condition", cards: [{ condition: [{ title: "Current Time", type: "current_time" }], gotos: { block_key: "delay" } }] },
       { key: "delay", type: "smart_delay", title: "Delay", cards: [], config: { delayValue: 1, delayUnits: "minutes" } },
+      { key: "action", type: "action", title: "Action", action: [{ action: "block_customer" }], cards: [] },
       { key: "unknown", type: "custom_action", title: "Custom", cards: [] },
     ];
-    expect(buildTemplateGraph(structural).nodes.map((node) => node.kind)).toEqual(["condition", "delay", "unknown"]);
+    expect(buildTemplateGraph(structural).nodes.map((node) => node.kind)).toEqual(["condition", "delay", "action", "unknown"]);
     expect(getBlockTextFields(structural, 0)).toEqual([]);
     expect(getBlockContentItems(structural, 0)).toEqual([]);
   });

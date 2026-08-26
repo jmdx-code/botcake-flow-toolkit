@@ -30,7 +30,7 @@ export default defineManifest({
     page: "src/scopes/options/index.html",
     open_in_tab: true,
   },
-  permissions: ["storage", "downloads", "scripting"],
+  permissions: ["storage", "downloads", "scripting", "alarms", "clipboardWrite"],
   host_permissions: [
     "https://botcake.io/*",
     "https://docs.google.com/*",
@@ -38,8 +38,14 @@ export default defineManifest({
     "https://drive.usercontent.google.com/*",
     "https://lh3.googleusercontent.com/*",
     "https://content.pancake.vn/*",
+    "https://graph.facebook.com/*",
   ],
   content_scripts: [
+    {
+      matches: ["https://botcake.io/*"],
+      js: ["src/scopes/content/analytics-bootstrap.ts"],
+      run_at: "document_start",
+    },
     {
       matches: ["https://botcake.io/*"],
       js: ["src/scopes/injects/botcake-main.entry.ts"],

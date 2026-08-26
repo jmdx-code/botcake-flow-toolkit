@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { strToU8, zipSync } from "fflate";
 import { createTemplateArchive, loadTemplateArchive } from "./archive";
 import { analyzeSnapshot } from "./template-analyzer";
 import { normalizePublicDriveUrl, parseCatalogCsv, sheetUrlToCsv } from "./catalog";
@@ -109,6 +110,35 @@ describe("template archive", () => {
     template.inputs.push({ key: media.key, label: "语音", kind: "audio", bindings: [media.configPath], options: [{ label: "缺失语音", asset: "assets/missing.mp3" }] });
     expect(() => createTemplateArchive(template, new Map())).toThrow("缺少素材");
   });
+
+  it("upgrades an old tag warning when the condition still contains its label", () => {
+    const template = analyzeSnapshot({
+      ...snapshot,
+      tags: [{ id: 1065210892, name: "B" }],
+      post: {
+        id: 200,
+        name: "旧标签模板",
+        blocks: [{
+          key: "condition",
+          type: "condition",
+          cards: [{ condition: [{ type: "tags", tags: [{ label: "B", tag_id: 1065210892 }] }] }],
+        }],
+      },
+    });
+    delete template.dependencies.tags;
+    template.dependencies.unsupported = [{
+      path: "$.blocks[0].cards[0].condition[0].tags[0].tag_id",
+      key: "tag_id",
+      value: 1065210892,
+      reason: "标签属于专页对象，当前版本不能可靠迁移",
+    }];
+    const bytes = zipSync({ "template.json": strToU8(JSON.stringify(template)) });
+
+    const loaded = loadTemplateArchive(bytes, "legacy-tags.zip");
+
+    expect(loaded.template.dependencies.tags).toEqual([{ name: "B", sourceId: "1065210892" }]);
+    expect(loaded.template.dependencies.unsupported).toEqual([]);
+  });
 });
 
 describe("public catalog", () => {
@@ -153,6 +183,47 @@ describe("media type detection", () => {
 });
 
 describe("compiler", () => {
+  it("extracts tag dependencies and maps or creates target-page tags for actions and conditions", async () => {
+    const taggedSnapshot: FlowSnapshot = {
+      ...snapshot,
+      botFields: [],
+      tags: [{ id: 1065210892, name: "B" }],
+      post: {
+        id: 200,
+        name: "标签动作",
+        blocks: [
+          { key: "action", title: "Action", type: "action", action: [
+            { action: "add_tag", action_id: [1065210892] },
+            { action: "remove_tag", action_id: [1065210892] },
+            { action: "block_customer" },
+          ], cards: [] },
+          { key: "condition", title: "Condition", type: "condition", cards: [{
+            type: "and",
+            condition: [{ type: "tags", title: "Tag", tags: [{ label: "B", tag_id: 1065210892 }], filter_type: "not_equal" }],
+          }] },
+        ],
+      },
+    };
+    const template = analyzeSnapshot(taggedSnapshot);
+    expect(template.dependencies.tags).toEqual([{ name: "B", sourceId: "1065210892" }]);
+    expect(template.dependencies.unsupported).toEqual([]);
+    const createTag = vi.fn(async () => ({ id: 9001, name: "B" }));
+    const result = await compileTemplate({ template, assets: new Map(), sourceName: "tags.zip" }, {}, {
+      getBotFields: async () => [],
+      createBotField: async () => { throw new Error("should not create bot field"); },
+      getTags: async () => [],
+      createTag,
+      uploadMedia: async () => { throw new Error("should not upload"); },
+      fetchBytes: async () => { throw new Error("should not fetch"); },
+    });
+    expect(createTag).toHaveBeenCalledWith("B");
+    expect(result.report.createdTags).toEqual(["B"]);
+    const json = JSON.stringify(result.payload.post);
+    expect(json).toContain('"action_id":[9001]');
+    expect(json).toContain('"tag_id":9001');
+    expect(json).toContain('"action":"block_customer"');
+  });
+
   it("rejects non-numeric values even when they come from import data", async () => {
     const template = analyzeSnapshot({
       ...snapshot,

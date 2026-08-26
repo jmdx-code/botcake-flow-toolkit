@@ -39,12 +39,16 @@ export function parseCatalogCsv(csv: string): CatalogRow[] {
     const kind = catalogKind(name);
     if (!kind) return [];
     const enabledRaw = (pick(normalized, "enabled", "启用", "状态") || (!headers ? columns[4] ?? "" : "")).toLowerCase();
+    const keywordsRaw = kind === "keyword"
+      ? pick(normalized, "keywords", "关键词", "触发关键词") || columns[2] || ""
+      : "";
     return [{
       name,
       kind,
       url,
-      version: pick(normalized, "version", "版本") || (!headers ? columns[2] : "") || undefined,
+      version: pick(normalized, "version", "版本") || (!headers && kind !== "keyword" ? columns[2] : "") || undefined,
       description: pick(normalized, "description", "说明", "描述") || (!headers ? columns[3] : "") || undefined,
+      ...(kind === "keyword" ? { keywords: parseKeywordTerms(keywordsRaw) } : {}),
       enabled: !["0", "false", "否", "停用", "disabled"].includes(enabledRaw),
     }];
   });
@@ -54,8 +58,16 @@ export function catalogKind(name: string): CatalogRow["kind"] | undefined {
   const normalized = name.trim();
   if (normalized.startsWith("设置")) return "settings";
   if (normalized.startsWith("默认回复")) return "defaultReply";
+  if (normalized.startsWith("关键词")) return "keyword";
   if (normalized.startsWith("流程")) return "flow";
   return undefined;
+}
+
+export function parseKeywordTerms(value: string): string[] {
+  return [...new Set(value
+    .split(/[,，]/)
+    .map((term) => term.trim())
+    .filter(Boolean))];
 }
 
 function normalizeKeys(row: Record<string, string>): Record<string, string> {

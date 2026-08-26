@@ -9,6 +9,7 @@ export function templateContractIssues(template: FlowTemplateV1): string[] {
   const inputs = new Map(template.inputs.map((input) => [input.key, input]));
   const mediaByPath = new Map(template.dependencies.media.map((media) => [media.configPath, media]));
   const botNames = new Set(template.dependencies.botFields.map((field) => field.name.trim().toLocaleLowerCase()));
+  const tagIds = new Set((template.dependencies.tags ?? []).flatMap((tag) => tag.sourceId ? [tag.sourceId] : []));
 
   walkJson(template.flow.post, (value, path) => {
     if (typeof value !== "string") return;
@@ -21,6 +22,21 @@ export function templateContractIssues(template: FlowTemplateV1): string[] {
       const name = match[1].trim();
       if (!botNames.has(name.toLocaleLowerCase())) issues.push(`${path} 使用了未登记的机器人变量“${name}”`);
     }
+  });
+
+  walkJson(template.flow.post, (value, path, parent, key) => {
+    if (key === "tag_id" && (typeof value === "string" || typeof value === "number") && !tagIds.has(String(value))) {
+      issues.push(`${path} 使用了未登记的标签 ID ${String(value)}`);
+    }
+    if (key !== "action_id" || !parent || Array.isArray(parent) || typeof parent !== "object") return;
+    const action = (parent as Record<string, unknown>).action;
+    if (action !== "add_tag" && action !== "remove_tag") return;
+    const ids = Array.isArray(value) ? value : [value];
+    ids.forEach((id) => {
+      if ((typeof id === "string" || typeof id === "number") && !tagIds.has(String(id))) {
+        issues.push(`${path} 使用了未登记的标签 ID ${String(id)}`);
+      }
+    });
   });
 
   for (const dependency of template.dependencies.media) {

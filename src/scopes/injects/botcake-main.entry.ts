@@ -2,12 +2,15 @@ import { APP_ID, DEFAULT_REPLY_EDIT_URL_PATTERN } from "../../shared/constants";
 import { isSameBotcakeTimezone, toBotcakeTimezoneValue } from "../../core/botcake-timezone";
 import type {
   BotField,
+  BotcakeTag,
   BotFieldSpec,
   CommentAutomationSettings,
   CommentFlowStatus,
   CommentReplyItem,
   EnsureBotFieldsResult,
   EnsureDefaultCommentFlowResult,
+  EnsureKeywordFlowResult,
+  FinalizeKeywordFlowResult,
   EnsureWelcomeFlowResult,
   FlowSnapshot,
   MainAction,
@@ -19,13 +22,26 @@ import type {
   SaveFlowPayload,
   UpdatePageAutomationPayload,
   UpdatePageAutomationResult,
+  AnalyticsLogEntry,
+  AnalyticsPage,
+  AnalyticsPageTraffic,
+  TrafficDashboardData,
 } from "../../shared/types";
 import { base64ToBytes, getFlowIdentity } from "../../shared/utils";
+import {
+  addAnalyticsDays,
+  aggregateCustomerTraffic,
+  assertTimezone,
+  dateInAnalyticsTimezone,
+  enumerateIsoDates,
+  parseAnalyticsTimestamp,
+} from "../../core/traffic-analytics";
 
 type RuntimeState = {
   accessToken: string;
   selectedPost?: Record<string, unknown>;
   botFields: BotField[];
+  tags: BotcakeTag[];
   selectedTab?: string | number;
   currentPageId?: string;
 };
@@ -33,7 +49,7 @@ type RuntimeState = {
 type BotcakeReduxState = {
   auth?: { accessToken?: unknown; access_token?: unknown };
   cards?: { selectedPost?: unknown; selectedTabMenu?: unknown; privateReplies?: unknown };
-  pages?: { botFields?: unknown; bot_fields?: unknown; currentPageId?: unknown; currentSettings?: unknown };
+  pages?: { botFields?: unknown; bot_fields?: unknown; tags?: unknown; currentPageId?: unknown; currentSettings?: unknown };
 };
 
 declare global {
@@ -80,6 +96,8 @@ async function dispatch<A extends MainAction>(action: A, payload: MainRequestMap
       const value = payload as MainRequestMap["createBotField"];
       return createBotField(value.name, value.type, value.value, value.description) as Promise<MainResponseMap[A]>;
     }
+    case "getTags": return getTags() as Promise<MainResponseMap[A]>;
+    case "createTag": return createTag((payload as MainRequestMap["createTag"]).name) as Promise<MainResponseMap[A]>;
     case "uploadMedia": return uploadMedia(payload as MainRequestMap["uploadMedia"]) as Promise<MainResponseMap[A]>;
     case "getPrivateReplies": return getPrivateReplies() as Promise<MainResponseMap[A]>;
     case "getCommentFlowStatus": return getCommentFlowStatus() as Promise<MainResponseMap[A]>;
@@ -89,7 +107,11 @@ async function dispatch<A extends MainAction>(action: A, payload: MainRequestMap
     case "ensureDefaultCommentFlow": return ensureDefaultCommentFlow(payload as MainRequestMap["ensureDefaultCommentFlow"]) as Promise<MainResponseMap[A]>;
     case "ensureWelcomeFlowFromComment": return ensureWelcomeFlowFromComment(payload as MainRequestMap["ensureWelcomeFlowFromComment"]) as Promise<MainResponseMap[A]>;
     case "ensureDefaultReplyFlow": return ensureDefaultReplyFlow(payload as MainRequestMap["ensureDefaultReplyFlow"]) as Promise<MainResponseMap[A]>;
+    case "ensureKeywordFlow": return ensureKeywordFlow(payload as MainRequestMap["ensureKeywordFlow"]) as Promise<MainResponseMap[A]>;
+    case "finalizeKeywordFlow": return finalizeKeywordFlow(payload as MainRequestMap["finalizeKeywordFlow"]) as Promise<MainResponseMap[A]>;
     case "activateDefaultReply": return activateDefaultReply() as Promise<MainResponseMap[A]>;
+    case "getAnalyticsPages": return getAnalyticsPages() as Promise<MainResponseMap[A]>;
+    case "getTrafficDashboardData": return getTrafficDashboardData(payload as MainRequestMap["getTrafficDashboardData"]) as Promise<MainResponseMap[A]>;
     default: throw new Error(`不支持的页面操作：${String(action)}`);
   }
 }
@@ -362,6 +384,353 @@ async function ensureDefaultCommentFlow(payload: MainRequestMap["ensureDefaultCo
   }
 }
 
+type CustomerKeywordRule = {
+  id: string | number;
+  name?: string;
+  flow_id?: string | number | null;
+  is_activated?: boolean;
+  keyword_type?: number;
+  content?: Record<string, unknown>;
+};
+
+type FlowSummary = {
+  id: string | number;
+  name?: string;
+};
+
+async function ensureKeywordFlow(payload: MainRequestMap["ensureKeywordFlow"]): Promise<EnsureKeywordFlowResult> {
+  const pageId = getCurrentPageId();
+  const { accessToken } = readRuntime();
+  const name = payload.name.trim();
+  const keywords = normalizeKeywordTerms(payload.keywords);
+  if (!name) throw new Error("关键词流程名称不能为空");
+  if (!keywords.length) throw new Error("关键词模板第三列至少需要一个关键词");
+
+  const allRules = await getCustomerKeywords(pageId, accessToken);
+  const matches = allRules
+    .filter((keyword) => String(keyword.name ?? "").trim() === name);
+  if (matches.length > 1) throw new Error(`找到 ${matches.length} 条同名关键词规则“${name}”，请先在 Botcake 中保留一条后重试`);
+
+  let keyword = matches[0];
+  let createdKeyword = false;
+  if (!keyword) {
+    // Repair an unbound rule left by an interrupted/older import instead of
+    // creating another invisible duplicate.
+    const reusable = allRules.filter((item) => !item.flow_id && sameKeywordTerms(keywordTermsFromRule(item), keywords));
+    if (reusable.length > 1) {
+      throw new Error(`找到 ${reusable.length} 条相同内容的未绑定关键词规则，请先在 Botcake 中清理后重试`);
+    }
+    if (reusable[0]) {
+      keyword = reusable[0];
+    } else {
+      keyword = await createCustomerKeyword(pageId, accessToken, keywords);
+      createdKeyword = true;
+    }
+  }
+
+  let flowId = keyword.flow_id ? String(keyword.flow_id) : "";
+  let createdFlow = false;
+  if (!flowId) {
+    const namedFlows = (await getNamedFlows(pageId, accessToken, name))
+      .filter((flow) => String(flow.name ?? "").trim() === name);
+    if (namedFlows.length > 1) throw new Error(`找到 ${namedFlows.length} 个同名 Flow“${name}”，请先在 Botcake 中保留一个后重试`);
+    if (namedFlows[0]) {
+      flowId = String(namedFlows[0].id);
+    } else {
+      flowId = await createNamedFlow(pageId, accessToken, name);
+      createdFlow = true;
+    }
+  }
+
+  // Do not bind or require the keyword here. A newly created Flow still has an
+  // empty block list at this point, and Botcake may accept add_flow without
+  // exposing the binding in the editable keyword list. The caller first saves
+  // the complete Flow, then finalizeKeywordFlow performs the authoritative
+  // update -> bind -> activate -> verify sequence.
+
+  return {
+    createdFlow,
+    createdKeyword,
+    flow: { id: flowId, name },
+    keyword: {
+      id: String(keyword.id),
+      name,
+      isActivated: Boolean(keyword.is_activated),
+    },
+  };
+}
+
+async function finalizeKeywordFlow(payload: MainRequestMap["finalizeKeywordFlow"]): Promise<FinalizeKeywordFlowResult> {
+  const pageId = getCurrentPageId();
+  const { accessToken } = readRuntime();
+  const name = payload.name.trim();
+  const keywords = normalizeKeywordTerms(payload.keywords);
+  if (!name || !keywords.length) throw new Error("关键词流程名称或关键词为空，无法完成绑定");
+
+  const rules = await getCustomerKeywords(pageId, accessToken);
+  const listedKeyword = rules.find((item) => String(item.id) === String(payload.keywordId))
+    ?? rules.find((item) => String(item.name ?? "").trim() === name);
+  // Never trust a carried keyword ID that is absent from the authoritative
+  // Customer-keyword list. Botcake returns success=true when update/add_flow is
+  // called with an expired unbound ID, but silently persists nothing. This can
+  // happen because importing a Flow navigates away for several seconds before
+  // finalization. Recreate the rule now, after the Flow is fully saved, and bind
+  // it immediately.
+  let keyword: CustomerKeywordRule;
+  if (listedKeyword) {
+    keyword = listedKeyword;
+    // A visible, unbound rule created with the official Customer payload can
+    // be bound immediately. Avoid touching that draft when its terms already
+    // match; bound rules still use the normal update path on later imports.
+    if (keyword.flow_id || !sameKeywordTerms(keywordTermsFromRule(keyword), keywords)) {
+      assertSuccessfulKeywordResponse(
+        await updateCustomerKeyword(pageId, accessToken, keyword.id, keywords),
+        "更新关键词",
+      );
+    }
+  } else {
+    // createCustomerKeyword already writes the complete type/content. Keep the
+    // newly created rule untouched until it is bound: Botcake treats unbound
+    // rules as a transient draft, and calling /update before /add_flow makes
+    // that draft disappear even though both endpoints report success.
+    keyword = await createCustomerKeyword(pageId, accessToken, keywords);
+  }
+  await bindKeywordFlow(pageId, accessToken, keyword.id, payload.flowId);
+
+  if (!booleanValue(keyword.is_activated)) {
+    const activateForm = new FormData();
+    activateForm.append("keyword_id", String(keyword.id));
+    // Botcake expects the current state here and toggles it on the server.
+    activateForm.append("is_activated", "false");
+    assertSuccessfulKeywordResponse(
+      await botcakeFetch(`/api/v1/pages/${pageId}/keywords/${keyword.id}`, accessToken, { method: "POST", body: activateForm }),
+      "启用关键词",
+    );
+  }
+
+  keyword = await requireBoundCustomerKeyword(pageId, accessToken, keyword.id, payload.flowId, name, keywords, true);
+
+  return {
+    flow: { id: String(payload.flowId), name },
+    keyword: { id: String(keyword.id), name, isActivated: true },
+  };
+}
+
+async function getCustomerKeywords(pageId: string, accessToken: string): Promise<CustomerKeywordRule[]> {
+  const pageSize = 100;
+  const rules: CustomerKeywordRule[] = [];
+  let page = 1;
+  let total = Number.POSITIVE_INFINITY;
+  while (rules.length < total) {
+    const result = await botcakeFetch(
+      `/api/v1/pages/${pageId}/keywords?for_page=false&for_comment=false&page_size=${pageSize}&page=${page}`,
+      accessToken,
+    );
+    recordKeywordDebug("list", {
+      success: result?.success,
+      page,
+      count: Array.isArray(result?.keywords) ? result.keywords.length : -1,
+      rules: Array.isArray(result?.keywords)
+        ? result.keywords.map((item: any) => ({ id: item?.id, name: item?.name, flow_id: item?.flow_id, keyword_type: item?.keyword_type, is_activated: item?.is_activated }))
+        : [],
+    });
+    assertSuccessfulKeywordResponse(result, "读取 Customer 关键词");
+    if (!Array.isArray(result?.keywords)) {
+      throw new Error(`Botcake 未返回可编辑的关键词列表：${JSON.stringify(result).slice(0, 400)}`);
+    }
+    const batch = result.keywords.flatMap((value: unknown) => {
+      const rule = firstRecord(value) as CustomerKeywordRule | undefined;
+      return rule?.id !== undefined && rule?.id !== null ? [rule] : [];
+    });
+    rules.push(...batch);
+    total = finiteNumber(result.record_search_count ?? result.record_count) ?? rules.length;
+    if (result.keywords.length < pageSize || !result.keywords.length) break;
+    page += 1;
+  }
+  return rules;
+}
+
+async function createCustomerKeyword(pageId: string, accessToken: string, keywords: string[]): Promise<CustomerKeywordRule> {
+  const changes = {
+    // Type 2 is Botcake's “contains any keyword” condition. Type 7 means
+    // “contains all keywords” and cannot be used for our OR-style templates.
+    keyword_type: 2,
+    content: keywordContent(keywords),
+    // Botcake itself creates an unbound keyword with an empty name. add_flow
+    // fills the displayed name from the selected Flow.
+    name: "",
+    coordinate: {
+      coordinateX: Math.floor(Math.random() * 1000),
+      coordinateY: Math.floor(Math.random() * 1000),
+    },
+    config: {
+      add_actions: [],
+      after_type: "immediately",
+      after: 1,
+    },
+    is_activated: false,
+    // Customer keywords created by Botcake omit `for_comment` entirely. The
+    // API misleadingly returns success when it is sent as false, but that rule
+    // is not published into the editable Customer list and add_flow becomes a
+    // silent no-op. Keep the payload compatible with the official UI.
+    for_page: false,
+  };
+  const form = new FormData();
+  form.append("changes", JSON.stringify(changes));
+  const result = await botcakeFetch(`/api/v1/pages/${pageId}/keywords`, accessToken, { method: "POST", body: form });
+  recordKeywordDebug("create", {
+    success: result?.success,
+    error_code: result?.error_code,
+    message: result?.message,
+    keyword: result?.keyword ? {
+      id: result.keyword.id,
+      name: result.keyword.name,
+      flow_id: result.keyword.flow_id,
+      keyword_type: result.keyword.keyword_type,
+      content: result.keyword.content,
+    } : undefined,
+  });
+  assertSuccessfulKeywordResponse(result, "创建关键词");
+  const keyword = firstRecord(result?.keyword) as CustomerKeywordRule | undefined;
+  if (!keyword?.id) throw new Error(`Botcake 未返回新关键词规则 ID：${JSON.stringify(result).slice(0, 400)}`);
+  return { ...keyword, name: String(keyword.name ?? "") };
+}
+
+async function updateCustomerKeyword(
+  pageId: string,
+  accessToken: string,
+  keywordId: string | number,
+  keywords: string[],
+): Promise<any> {
+  const form = new FormData();
+  form.append("keyword_id", String(keywordId));
+  form.append("keyword_type", "2");
+  form.append("content", JSON.stringify(keywordContent(keywords)));
+  const result = await botcakeFetch(`/api/v1/pages/${pageId}/keywords/${keywordId}/update`, accessToken, { method: "POST", body: form });
+  recordKeywordDebug("update", { keywordId, success: result?.success, error_code: result?.error_code, message: result?.message });
+  return result;
+}
+
+async function createNamedFlow(pageId: string, accessToken: string, name: string): Promise<string> {
+  const changes = { name, contents: [], path: [], blocks: [] };
+  const form = new FormData();
+  form.append("changes", JSON.stringify(changes));
+  const result = await botcakeFetch(`/api/v1/pages/${pageId}/flow/create`, accessToken, { method: "POST", body: form });
+  const id = result?.flow?.id ?? result?.flow_id ?? result?.id;
+  if (id === undefined || id === null || id === "") throw new Error(`Botcake 未返回新 Flow ID：${JSON.stringify(result).slice(0, 400)}`);
+  return String(id);
+}
+
+async function getNamedFlows(pageId: string, accessToken: string, name: string): Promise<FlowSummary[]> {
+  const pageSize = 100;
+  const flows: FlowSummary[] = [];
+  let page = 1;
+  while (true) {
+    const form = new FormData();
+    form.append("change", JSON.stringify({ path: null, isRemoved: false }));
+    const result = await botcakeFetch(`/api/v1/pages/${pageId}/flow?page_size=${pageSize}&page=${page}`, accessToken, {
+      method: "POST",
+      body: form,
+    });
+    if (result?.success === false || !Array.isArray(result?.flows)) {
+      throw new Error(`Botcake 未返回 Flow 列表：${JSON.stringify(result).slice(0, 400)}`);
+    }
+    const batch = result.flows.flatMap((value: unknown) => {
+      const flow = firstRecord(value) as FlowSummary | undefined;
+      return flow?.id !== undefined && flow?.id !== null ? [flow] : [];
+    });
+    flows.push(...batch);
+    if (result.flows.length < pageSize || !result.flows.length) break;
+    page += 1;
+  }
+  return flows.filter((flow) => String(flow.name ?? "").trim() === name);
+}
+
+async function bindKeywordFlow(pageId: string, accessToken: string, keywordId: string | number, flowId: string | number): Promise<void> {
+  const form = new FormData();
+  form.append("keyword_id", String(keywordId));
+  form.append("flow_id", String(flowId));
+  const result = await botcakeFetch(`/api/v1/pages/${pageId}/keywords/add_flow`, accessToken, { method: "POST", body: form });
+  recordKeywordDebug("bind", { keywordId, flowId, success: result?.success, error_code: result?.error_code, message: result?.message });
+  assertSuccessfulKeywordResponse(result, "绑定关键词 Flow");
+}
+
+function recordKeywordDebug(stage: string, value: unknown): void {
+  const target = window as typeof window & { __BFT_KEYWORD_DEBUG__?: Array<{ at: string; stage: string; value: unknown }> };
+  const records = target.__BFT_KEYWORD_DEBUG__ ?? [];
+  records.push({ at: new Date().toISOString(), stage, value });
+  const recent = records.slice(-30);
+  target.__BFT_KEYWORD_DEBUG__ = recent;
+  // Content scripts and the page run in different JS worlds, but share the
+  // document. Mirror only the sanitized diagnostics so browser-side testing
+  // can inspect the real Botcake responses without exposing access tokens.
+  document.documentElement.setAttribute("data-bft-keyword-debug", JSON.stringify(recent));
+}
+
+function keywordContent(keywords: string[]): Record<string, string[]> {
+  return { is_content: keywords, not_content: [], contents: [], are_content: [], rates: [] };
+}
+
+function normalizeKeywordTerms(values: string[]): string[] {
+  return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
+}
+
+async function requireBoundCustomerKeyword(
+  pageId: string,
+  accessToken: string,
+  keywordId: string | number,
+  flowId: string | number,
+  name: string,
+  expectedKeywords?: string[],
+  expectedActivated?: boolean,
+): Promise<CustomerKeywordRule> {
+  let found: CustomerKeywordRule | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const rules = await getCustomerKeywords(pageId, accessToken);
+    found = rules.find((item) => String(item.id) === String(keywordId))
+      ?? rules.find((item) => String(item.flow_id ?? "") === String(flowId));
+    if (found && String(found.flow_id ?? "") === String(flowId)) break;
+    // The keyword list is eventually consistent after add_flow/activation.
+    // Keep the retry bounded, but allow Botcake enough time to publish it.
+    if (attempt === 0) await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+  }
+  if (!found) throw new Error(`Flow“${name}”已准备好，但 Botcake 未保存对应的关键词规则，请重试`);
+  if (String(found.flow_id ?? "") !== String(flowId)) {
+    throw new Error(`关键词规则“${name}”未绑定到目标 Flow，请重试`);
+  }
+  if (found.keyword_type !== undefined && Number(found.keyword_type) !== 2) {
+    throw new Error(`关键词规则“${name}”不是“包含任一关键词”类型`);
+  }
+  if (expectedActivated === true && !booleanValue(found.is_activated)) {
+    throw new Error(`关键词规则“${name}”已创建，但未成功启用`);
+  }
+  if (expectedKeywords?.length) {
+    const actual = Array.isArray(found.content?.is_content)
+      ? found.content.is_content.map((value) => String(value).trim()).filter(Boolean)
+      : [];
+    if (actual.length && !sameKeywordTerms(actual, expectedKeywords)) {
+      throw new Error(`关键词规则“${name}”已创建，但关键词内容校验不一致`);
+    }
+  }
+  return found;
+}
+
+function sameKeywordTerms(left: string[], right: string[]): boolean {
+  const a = [...new Set(left)].sort();
+  const b = [...new Set(right)].sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function keywordTermsFromRule(rule: CustomerKeywordRule): string[] {
+  return Array.isArray(rule.content?.is_content)
+    ? rule.content.is_content.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+}
+
+function assertSuccessfulKeywordResponse(result: any, action: string): void {
+  if (result?.success === false) throw new Error(`${action}失败：${JSON.stringify(result).slice(0, 400)}`);
+}
+
 function createPrivateReplySkeleton(name: string): Record<string, any> {
   return {
     key: randomBotcakeKey(),
@@ -534,6 +903,7 @@ function inspectFlow(): FlowSnapshot {
     isPreview: Boolean(selectedPost.is_preview ?? false),
     isPreviewPublished: Boolean(selectedPost.is_preview_published ?? false),
     botFields: cloneSerializable(runtime.botFields),
+    tags: cloneSerializable(runtime.tags),
     capturedAt: new Date().toISOString(),
   };
 }
@@ -556,6 +926,44 @@ async function saveFlow(payload: SaveFlowPayload): Promise<{ success: boolean; r
 
 async function getBotFields(): Promise<BotField[]> {
   return (await getAllBotFields()).filter((field) => !booleanValue(field.is_archive));
+}
+
+async function getTags(): Promise<BotcakeTag[]> {
+  const pageId = getCurrentPageId();
+  const { accessToken } = readRuntime();
+  const json = await botcakeFetch(`/api/v1/pages/${pageId}/tags`, accessToken);
+  const candidates = [json?.tags, json?.result, json?.data, json];
+  const tags = candidates.find(Array.isArray) ?? [];
+  return tags.flatMap((value: unknown) => {
+    const tag = firstRecord(value);
+    const id = tag?.id ?? tag?.tag_id;
+    const name = tag?.name ?? tag?.label;
+    if ((typeof id !== "string" && typeof id !== "number") || typeof name !== "string" || !name.trim()) return [];
+    return [{ ...tag, id, name: name.trim() } as BotcakeTag];
+  });
+}
+
+async function createTag(name: string): Promise<BotcakeTag> {
+  const normalized = name.trim();
+  if (!normalized) throw new Error("标签名称不能为空");
+  const existing = (await getTags()).find((tag) => tag.name.trim().toLocaleLowerCase() === normalized.toLocaleLowerCase());
+  if (existing) return existing;
+  const pageId = getCurrentPageId();
+  const { accessToken } = readRuntime();
+  const json = await botcakeFetch(`/api/v1/pages/${pageId}/tags`, accessToken, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: normalized }),
+  });
+  const direct = firstRecord(json?.tag) ?? firstRecord(json?.result) ?? firstRecord(json?.data) ?? firstRecord(json);
+  const directId = direct?.id ?? direct?.tag_id;
+  const directName = direct?.name ?? direct?.label;
+  if ((typeof directId === "string" || typeof directId === "number") && typeof directName === "string") {
+    return { ...direct, id: directId, name: directName.trim() } as BotcakeTag;
+  }
+  const created = (await getTags()).find((tag) => tag.name.trim().toLocaleLowerCase() === normalized.toLocaleLowerCase());
+  if (!created) throw new Error(`Botcake 已响应创建标签，但未能读取新标签“${normalized}”`);
+  return created;
 }
 
 async function getAllBotFields(): Promise<BotField[]> {
@@ -717,6 +1125,234 @@ function getCurrentPageId(): string {
   return fromUrl;
 }
 
+const ANALYTICS_PAGE_SIZE = 50;
+const ANALYTICS_MAX_PAGES = 500;
+
+async function getAnalyticsPages(): Promise<AnalyticsPage[]> {
+  const pageMap = new Map<string, AnalyticsPage>();
+  try {
+    const token = readRuntime().accessToken;
+    for (const path of ["/api/v1/pages", "/api/v1/users/pages_by_platform_on_pancake"] as const) {
+      try {
+        const raw = await botcakeFetch(path, token);
+        const rows = extractRecordArray(raw, ["pages", "activated", "inactivated", "data", "items"]);
+        for (const row of rows) {
+          const page = toAnalyticsPage(row);
+          if (page) pageMap.set(page.id, mergeAnalyticsPage(pageMap.get(page.id), page));
+        }
+        if (pageMap.size) break;
+      } catch {
+        // 继续使用下一接口或页面状态，避免单一接口变化使目录完全不可用。
+      }
+    }
+  } catch {
+    // 页面登录状态尚未准备好时仍可尝试 Redux / React 页面数据。
+  }
+  const roots: unknown[] = [];
+  const reduxState = window.__NEXT_REDUX_STORE__?.getState?.();
+  if (reduxState) roots.push(reduxState);
+  const nextText = document.getElementById("__NEXT_DATA__")?.textContent;
+  if (nextText) {
+    try { roots.push(JSON.parse(nextText)); } catch { /* 页面数据尚未准备完成 */ }
+  }
+  roots.push(...collectReactRoots());
+
+  const objects = collectObjects(roots, 8, 12_000);
+  for (const object of objects) {
+    for (const key of ["activated", "inactivated", "pages", "page_list", "pageList", "activated_pages"] as const) {
+      const value = object[key];
+      if (!Array.isArray(value)) continue;
+      for (const item of value) {
+        const page = toAnalyticsPage(item);
+        if (page) pageMap.set(page.id, mergeAnalyticsPage(pageMap.get(page.id), page));
+      }
+    }
+  }
+
+  for (const image of document.querySelectorAll<HTMLImageElement>("img[alt]")) {
+    const alt = image.alt.trim();
+    if (!alt) continue;
+    const page = [...pageMap.values()].find((item) => item.name === alt);
+    const source = image.currentSrc || image.src;
+    if (page && /^https:\/\//.test(source) && !/logo/i.test(alt)) pageMap.set(page.id, { ...page, avatarUrl: source });
+  }
+
+  const currentId = location.pathname.match(/^\/(\d+)(?:\/|$)/)?.[1];
+  if (currentId && !pageMap.has(currentId)) {
+    const heading = [...document.querySelectorAll("h1, h2, h3")].map((node) => node.textContent?.trim()).find(Boolean);
+    pageMap.set(currentId, { id: currentId, name: heading && !/^(Home|Flow|Comments|Settings)$/i.test(heading) ? heading : `专页 ${currentId}` });
+  }
+  return [...pageMap.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+}
+
+async function getTrafficDashboardData(payload: MainRequestMap["getTrafficDashboardData"]): Promise<TrafficDashboardData> {
+  assertTimezone(payload.timezone);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(payload.endDate) || payload.startDate > payload.endDate) {
+    throw new Error("统计日期范围不正确");
+  }
+  const directory = await getAnalyticsPages();
+  const requested = new Set(payload.pageIds.filter(Boolean));
+  const pages = (requested.size ? directory.filter((page) => requested.has(page.id)) : directory);
+  if (!pages.length) throw new Error("没有找到可统计的 Botcake 专页");
+
+  const today = dateInAnalyticsTimezone(Date.now(), payload.timezone);
+  const yesterday = addAnalyticsDays(today, -1);
+  const results = await mapWithConcurrency(pages, 3, (page) => fetchAnalyticsPage(page, payload, today, yesterday));
+  return {
+    timezone: payload.timezone,
+    today,
+    yesterday,
+    startDate: payload.startDate,
+    endDate: payload.endDate,
+    pages: results.map((result) => result.traffic),
+    logs: results.flatMap((result) => result.logs).sort((a, b) => parseAnalyticsTimestamp(b.updatedAt) - parseAnalyticsTimestamp(a.updatedAt)),
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
+async function fetchAnalyticsPage(
+  page: AnalyticsPage,
+  payload: MainRequestMap["getTrafficDashboardData"],
+  today: string,
+  yesterday: string,
+): Promise<{ traffic: AnalyticsPageTraffic; logs: AnalyticsLogEntry[] }> {
+  const blank = (): AnalyticsPageTraffic => ({
+    page,
+    todayHours: Array(24).fill(0),
+    yesterdayHours: Array(24).fill(0),
+    daily: enumerateIsoDates(payload.startDate, payload.endDate).map((date) => ({ date, count: 0 })),
+    todayTotal: 0,
+    yesterdayTotal: 0,
+    rangeTotal: 0,
+    gender: { female: 0, male: 0, unknown: 0 },
+  });
+  const traffic = blank();
+  let logs: AnalyticsLogEntry[] = [];
+  const token = readRuntime().accessToken;
+  try {
+    const customers = await fetchAllAnalyticsCustomers(page, token);
+    Object.assign(traffic, aggregateCustomerTraffic(customers, {
+      timezone: payload.timezone,
+      startDate: payload.startDate,
+      endDate: payload.endDate,
+      today,
+      yesterday,
+    }));
+  } catch (error) {
+    traffic.error = error instanceof Error ? error.message : String(error);
+  }
+
+  try {
+    const raw = await botcakeFetch(`/api/v1/pages/${page.id}/logs`, token);
+    const rows = extractRecordArray(raw, ["page_logs", "logs", "data"]).slice(0, 50);
+    const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
+    logs = rows.map((row): AnalyticsLogEntry => ({
+      page,
+      id: typeof row.id === "string" || typeof row.id === "number" ? row.id : undefined,
+      code: String(row.code ?? "-") ,
+      subcode: String(row.subcode ?? "-") ,
+      description: String(row.description ?? row.message ?? "未知错误"),
+      count: Math.max(0, Number(row.count ?? 0) || 0),
+      updatedAt: String(row.updated_at ?? row.updatedAt ?? ""),
+    })).filter((entry) => {
+      const timestamp = parseAnalyticsTimestamp(entry.updatedAt);
+      return Number.isFinite(timestamp) && timestamp >= cutoff;
+    });
+  } catch {
+    // 日志属于辅助信息；读取失败不影响核心引流统计。
+  }
+  return { traffic, logs };
+}
+
+async function fetchAllAnalyticsCustomers(page: AnalyticsPage, accessToken: string): Promise<Record<string, unknown>[]> {
+  const rows: Record<string, unknown>[] = [];
+  const apiPageId = analyticsApiPageId(page);
+  let previousSignature = "";
+  for (let pageNumber = 1; pageNumber <= ANALYTICS_MAX_PAGES; pageNumber += 1) {
+    const raw = await botcakeFetch(`/api/v1/pages/${apiPageId}/customers?page_size=${ANALYTICS_PAGE_SIZE}&page=${pageNumber}`, accessToken);
+    const batch = extractRecordArray(raw, ["customers", "data", "items"]);
+    if (!batch.length) break;
+    const signature = `${String(batch[0]?.id ?? batch[0]?.psid ?? "")}:${String(batch.at(-1)?.id ?? batch.at(-1)?.psid ?? "")}:${batch.length}`;
+    if (signature === previousSignature) break;
+    previousSignature = signature;
+    rows.push(...batch);
+    if (batch.length < ANALYTICS_PAGE_SIZE) break;
+    if (pageNumber === ANALYTICS_MAX_PAGES) throw new Error(`专页“${page.name}”客户数据超过安全分页上限`);
+  }
+  return rows;
+}
+
+function toAnalyticsPage(value: unknown): AnalyticsPage | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const rawId = record.page_id ?? record.pageId ?? record.id;
+  const rawName = record.page_name ?? record.pageName ?? record.name ?? record.title;
+  if ((typeof rawId !== "string" && typeof rawId !== "number") || typeof rawName !== "string") return undefined;
+  const id = String(rawId).replace(/^igo_/, "");
+  if (!/^\d{8,}$/.test(id) || !rawName.trim()) return undefined;
+  const platform = typeof record.platform === "string" ? record.platform : typeof record.type === "string" ? record.type : undefined;
+  const avatarUrl = findPageAvatar(record) ?? (/facebook/i.test(platform ?? "") ? `https://graph.facebook.com/${id}/picture?type=small` : undefined);
+  return { id, name: rawName.trim(), avatarUrl, platform };
+}
+
+function mergeAnalyticsPage(current: AnalyticsPage | undefined, next: AnalyticsPage): AnalyticsPage {
+  return current ? { ...current, ...next, avatarUrl: next.avatarUrl ?? current.avatarUrl, platform: next.platform ?? current.platform } : next;
+}
+
+function findPageAvatar(record: Record<string, unknown>): string | undefined {
+  for (const key of ["avatar_url", "avatarUrl", "picture", "image_url", "image", "photo_url", "profile_picture_url"]) {
+    const value = record[key];
+    if (typeof value === "string" && /^https:\/\//.test(value)) return value;
+    if (value && typeof value === "object") {
+      const nested = value as Record<string, unknown>;
+      const url = nested.url ?? nested.src;
+      if (typeof url === "string" && /^https:\/\//.test(url)) return url;
+    }
+  }
+  for (const key of ["platform_extra_info", "platformExtraInfo", "extra_info"]) {
+    const nested = record[key];
+    if (nested && typeof nested === "object") {
+      const avatar = findPageAvatar(nested as Record<string, unknown>);
+      if (avatar) return avatar;
+    }
+  }
+  return undefined;
+}
+
+function analyticsApiPageId(page: AnalyticsPage): string {
+  const platform = page.platform?.toLowerCase() ?? "";
+  return /instagram|(^|\W)ig($|\W)/.test(platform) ? `igo_${page.id}` : page.id;
+}
+
+function extractRecordArray(value: unknown, preferredKeys: string[]): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)));
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  for (const key of preferredKeys) {
+    const found = record[key];
+    if (Array.isArray(found)) return extractRecordArray(found, preferredKeys);
+    if (found && typeof found === "object") {
+      const nested = extractRecordArray(found, preferredKeys);
+      if (nested.length) return nested;
+    }
+  }
+  return [];
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 async function botcakeFetch(path: string, accessToken: string, init: RequestInit = {}): Promise<any> {
   const url = new URL(path, location.origin);
   url.searchParams.set("access_token", accessToken);
@@ -735,18 +1371,20 @@ function readRuntime(): RuntimeState {
   const roots = collectReactRoots();
   const objects = collectObjects(roots, 5, 5000);
   const accessToken = findStringProperty(objects, ["accessToken", "access_token", "token"])
-    ?? findNextDataToken();
+    ?? findNextDataToken()
+    ?? findStoredAccessToken();
   if (!accessToken) throw new Error("无法取得 Botcake 登录令牌，请刷新页面后重试");
 
   const selectedPost = findSelectedPost(objects);
   const botFields = findArrayProperty(objects, "botFields")
     ?? findArrayProperty(objects, "bot_fields")
     ?? [];
+  const tags = findArrayProperty(objects, "tags") ?? [];
   const selectedTabValue = findPrimitiveProperty(objects, ["selectedTab", "selected_tab", "selectedTabMenu"]);
   const selectedTab = typeof selectedTabValue === "string" || typeof selectedTabValue === "number"
     ? selectedTabValue
     : undefined;
-  return { accessToken, selectedPost, botFields: botFields as BotField[], selectedTab };
+  return { accessToken, selectedPost, botFields: botFields as BotField[], tags: tags as BotcakeTag[], selectedTab };
 }
 
 function readReduxRuntime(): RuntimeState | undefined {
@@ -756,12 +1394,14 @@ function readReduxRuntime(): RuntimeState | undefined {
   if (typeof accessTokenValue !== "string" || accessTokenValue.length <= 10) return undefined;
   const selectedPost = isPost(state.cards?.selectedPost) ? state.cards.selectedPost : undefined;
   const fields = state.pages?.botFields ?? state.pages?.bot_fields;
+  const tags = state.pages?.tags;
   const selectedTabValue = state.cards?.selectedTabMenu;
   const pageIdValue = state.pages?.currentPageId;
   return {
     accessToken: accessTokenValue,
     selectedPost,
     botFields: Array.isArray(fields) ? fields as BotField[] : [],
+    tags: Array.isArray(tags) ? tags as BotcakeTag[] : [],
     selectedTab: typeof selectedTabValue === "string" || typeof selectedTabValue === "number" ? selectedTabValue : undefined,
     currentPageId: typeof pageIdValue === "string" || typeof pageIdValue === "number" ? String(pageIdValue) : undefined,
   };
@@ -865,6 +1505,38 @@ function findNextDataToken(): string | undefined {
   if (!text) return undefined;
   const match = text.match(/"(?:accessToken|access_token)":"([^"]+)"/);
   return match?.[1];
+}
+
+function findStoredAccessToken(): string | undefined {
+  const candidates = [
+    localStorage.getItem("token_jwt"),
+    localStorage.getItem("BOTCAKE_TOKEN"),
+    localStorage.getItem("accessToken"),
+    sessionStorage.getItem("token_jwt"),
+    sessionStorage.getItem("BOTCAKE_TOKEN"),
+    document.cookie.match(/(?:^|;\s*)token_jwt=([^;]+)/)?.[1],
+  ];
+  for (const candidate of candidates) {
+    const token = normalizeStoredToken(candidate);
+    if (token && token.length > 10) return token;
+  }
+  return undefined;
+}
+
+function normalizeStoredToken(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  let text = value.trim();
+  try { text = decodeURIComponent(text); } catch { /* 已解码 */ }
+  if (text.startsWith("{") || text.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const nested = parsed.token_jwt ?? parsed.accessToken ?? parsed.access_token ?? parsed.token;
+      if (typeof nested === "string") text = nested.trim();
+    } catch { /* 不是 JSON 存储值 */ }
+  }
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) text = text.slice(1, -1);
+  const token = text.replace(/^Bearer\s+/i, "").trim();
+  return token || undefined;
 }
 
 function cloneSerializable<T>(value: T): T {

@@ -1,5 +1,6 @@
 import type {
   BotField,
+  BotcakeTag,
   CompileReport,
   FlowTemplateV1,
   FlowSnapshot,
@@ -18,6 +19,8 @@ import { inferMediaMime } from "./media";
 type CompileServices = {
   getBotFields: () => Promise<BotField[]>;
   createBotField: (name: string, type?: string, value?: unknown, description?: string) => Promise<BotField>;
+  getTags?: () => Promise<BotcakeTag[]>;
+  createTag?: (name: string) => Promise<BotcakeTag>;
   uploadMedia: (data: { kind: MediaKind; name: string; mime: string; bytes: Uint8Array }) => Promise<Record<string, unknown>>;
   fetchBytes: (url: string) => Promise<{ bytes: Uint8Array; contentType?: string; fileName?: string }>;
   fetchText?: (url: string) => Promise<string>;
@@ -39,9 +42,10 @@ export async function compileTemplate(
   const post = deepClone(template.flow.post);
   restoreEntryBlock(post, template.flow.entryBlockKey);
   if (target) preserveTargetFlowEnvelope(post, target);
-  const report: CompileReport = { warnings: [], createdBotFields: [], mappedBotFields: [], uploadedMedia: [] };
+  const report: CompileReport = { warnings: [], createdBotFields: [], mappedBotFields: [], createdTags: [], mappedTags: [], uploadedMedia: [] };
   await applyTextInputs(post, template, inputValues, services);
   await mapBotFields(post, template, services, report);
+  await mapTags(post, template, services, report);
 
   for (const input of template.inputs.filter((item) => isMediaKind(item.kind) && item.required)) {
     if (!hasMediaValue(inputValues[input.key])) throw new Error(`请选择“${input.label}”`);
@@ -90,6 +94,59 @@ export async function compileTemplate(
     },
     report,
   };
+}
+
+async function mapTags(
+  post: Record<string, unknown>,
+  template: FlowTemplateV1,
+  services: CompileServices,
+  report: CompileReport,
+): Promise<void> {
+  const dependencies = template.dependencies.tags ?? [];
+  if (!dependencies.length) return;
+  if (!services.getTags || !services.createTag) throw new Error("当前页面助手版本不支持标签映射，请重新加载扩展和 Botcake 页面");
+  const targetTags = await services.getTags();
+  const byName = new Map(targetTags.map((tag) => [tag.name.trim().toLocaleLowerCase(), tag]));
+  const bySourceId = new Map<string, BotcakeTag>();
+  for (const dependency of dependencies) {
+    const normalized = dependency.name.trim().toLocaleLowerCase();
+    let target = byName.get(normalized);
+    if (!target) {
+      target = await services.createTag(dependency.name);
+      byName.set(normalized, target);
+      report.createdTags.push(dependency.name);
+    }
+    if (dependency.sourceId) bySourceId.set(dependency.sourceId, target);
+    report.mappedTags.push({ name: dependency.name, from: dependency.sourceId, to: String(target.id) });
+  }
+
+  const blocks = Array.isArray(post.blocks) ? post.blocks : [];
+  for (const blockValue of blocks) {
+    if (!blockValue || typeof blockValue !== "object" || Array.isArray(blockValue)) continue;
+    const block = blockValue as Record<string, unknown>;
+    if (String(block.type ?? "").toLocaleLowerCase() === "action" && Array.isArray(block.action)) {
+      for (const actionValue of block.action) {
+        if (!actionValue || typeof actionValue !== "object" || Array.isArray(actionValue)) continue;
+        const action = actionValue as Record<string, unknown>;
+        if (!new Set(["add_tag", "remove_tag"]).has(String(action.action ?? ""))) continue;
+        const ids = Array.isArray(action.action_id) ? action.action_id : [action.action_id];
+        action.action_id = ids.map((id) => bySourceId.get(String(id))?.id ?? id);
+      }
+    }
+    walkJson(block, (value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return;
+      const rule = value as Record<string, unknown>;
+      if (rule.type !== "tags" || !Array.isArray(rule.tags)) return;
+      rule.tags.forEach((tagValue) => {
+        if (!tagValue || typeof tagValue !== "object" || Array.isArray(tagValue)) return;
+        const tag = tagValue as Record<string, unknown>;
+        const target = bySourceId.get(String(tag.tag_id ?? ""));
+        if (!target) return;
+        tag.tag_id = target.id;
+        tag.label = target.name;
+      });
+    });
+  }
 }
 
 function restoreEntryBlock(post: Record<string, unknown>, entryBlockKey: string): void {

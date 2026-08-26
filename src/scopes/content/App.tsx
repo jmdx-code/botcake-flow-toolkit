@@ -7,6 +7,7 @@ import { DEFAULT_REPLY_EDIT_URL_PATTERN, FLOW_URL_PATTERN } from "../../shared/c
 import type { CatalogRow, FlowSnapshot, ImportInputValue, LoadedTemplate, PendingFlowApply } from "../../shared/types";
 import { callBackground, callMain, downloadBytes, fetchBytes, fetchCatalog, fetchText } from "./bridge";
 import { clearPendingFlowApply, readPendingFlowApply } from "./pending-flow-apply";
+import { reloadWithAssistantOpen, requestAssistantOpenOnArrival, resolveAssistantReturnUrl } from "./assistant-return";
 import { countMissingRequired, initialInputValues, TemplateInputControl } from "./TemplateInputControl";
 import { usePersistentPosition } from "./usePersistentPosition";
 
@@ -121,7 +122,7 @@ export function App({ onClose }: { onClose?: () => void }) {
       }
       const next = loadTemplateArchive(task.archiveBytes, task.sourceName);
       setPendingTask(task); setLoaded(next); setValues(task.values);
-      setNotice({ kind: "info", text: `正在应用${task.target === "defaultReply" ? "默认回复" : "评论私信"}流程：${next.template.meta.name}…` });
+      setNotice({ kind: "info", text: `正在应用${task.target === "defaultReply" ? "默认回复" : task.target === "keyword" ? "关键词" : "评论私信"}流程：${task.keyword?.name ?? next.template.meta.name}…` });
       await applyLoadedTemplate(next, task.values, { skipConfirm: true, pending: task });
     }).catch((error) => setNotice({ kind: "error", text: `自动应用失败：${messageOf(error)}` }));
   }, [snapshot]);
@@ -173,7 +174,7 @@ export function App({ onClose }: { onClose?: () => void }) {
       }, 120_000);
       if (!saved.success) throw new Error(`Botcake 恢复失败：${summarizeResult(saved.result)}`);
       setNotice({ kind: "success", text: "备份已恢复，正在刷新流程…" });
-      window.setTimeout(() => window.location.reload(), 800);
+      reloadWithAssistantOpen(800);
     });
   }
 
@@ -255,6 +256,9 @@ export function App({ onClose }: { onClose?: () => void }) {
 
     await run("编译并设置流程", async () => {
       const before = await callMain("inspect", undefined);
+      const returnUrl = options.pending
+        ? resolveAssistantReturnUrl(options.pending.returnUrl, before.identity.pageId)
+        : undefined;
       await callBackground({
         action: "saveBackup",
         key: backupScopeKey(before),
@@ -263,11 +267,15 @@ export function App({ onClose }: { onClose?: () => void }) {
       const compiled = await compileTemplate(target, targetValues, {
         getBotFields: () => callMain("getBotFields", undefined),
         createBotField: (name, type, value, description) => callMain("createBotField", { name, type, value, description }),
+        getTags: () => callMain("getTags", undefined),
+        createTag: (name) => callMain("createTag", { name }),
         uploadMedia: uploadServiceAdapter((data) => callMain("uploadMedia", data, 120_000)),
         fetchBytes,
         fetchText,
       }, before);
-      const savePayload = isDefaultReplyPage
+      const savePayload = options.pending?.target === "keyword" && options.pending.keyword
+        ? { ...compiled.payload, name: options.pending.keyword.name }
+        : isDefaultReplyPage
         ? { ...compiled.payload, name: "默认回复" }
         : compiled.payload;
       const saved = await callMain("saveFlow", savePayload, 120_000);
@@ -280,6 +288,15 @@ export function App({ onClose }: { onClose?: () => void }) {
         const welcome = await callMain("ensureWelcomeFlowFromComment", { enable: true }, 120_000);
         if (!welcome.enabled || !welcome.flow) throw new Error("评论流程已保存，但欢迎信息绑定失败");
       }
+      if (options.pending?.target === "keyword") {
+        if (!options.pending.keyword) throw new Error("关键词应用任务缺少规则信息");
+        await callMain("finalizeKeywordFlow", {
+          keywordId: options.pending.keyword.id,
+          flowId: before.identity.flowId,
+          name: options.pending.keyword.name,
+          keywords: options.pending.keyword.terms,
+        }, 120_000);
+      }
       if (options.pending) {
         await clearPendingFlowApply(options.pending.id);
         setPendingTask(undefined);
@@ -287,13 +304,23 @@ export function App({ onClose }: { onClose?: () => void }) {
       await loadBackupsFor(before);
       const details = [
         compiled.report.createdBotFields.length ? `新建变量 ${compiled.report.createdBotFields.length} 个` : "变量已映射",
+        compiled.report.createdTags.length ? `新建标签 ${compiled.report.createdTags.length} 个` : compiled.report.mappedTags.length ? "标签已映射" : "无标签动作",
         compiled.report.uploadedMedia.length ? `上传素材 ${compiled.report.uploadedMedia.length} 个` : "无素材上传",
       ].join("，");
       const bindingDetail = options.pending?.target === "defaultReply"
         ? "，默认回复已更新并启用"
+        : options.pending?.target === "keyword"
+          ? `，关键词规则“${options.pending.keyword?.name ?? ""}”已更新并启用`
         : options.pending?.applyWelcome ? "，并已同步欢迎信息" : "";
-      setNotice({ kind: "success", text: `流程已保存：${details}${bindingDetail}。正在刷新…` });
-      window.setTimeout(() => window.location.reload(), 900);
+      setNotice({
+        kind: "success",
+        text: `流程已保存：${details}${bindingDetail}。${returnUrl ? "正在返回原页面…" : "正在刷新…"}`,
+      });
+      window.setTimeout(() => {
+        requestAssistantOpenOnArrival();
+        if (returnUrl) location.assign(returnUrl);
+        else location.reload();
+      }, 900);
     });
   }
 
@@ -327,7 +354,7 @@ export function App({ onClose }: { onClose?: () => void }) {
             {templateRows.map((row) => <div className="resource-row" key={`${row.name}-${row.url}`}><div><strong>{row.name}</strong>{row.description && <small>{row.description}</small>}</div><button disabled={Boolean(busy) || !snapshot} onClick={() => void loadRemoteTemplate(row)}>应用到{targetLabel}</button></div>)}
             {!templateRows.length && <p className="resource-empty">{catalogError ? `控制台读取失败：${catalogError}` : `控制台中没有以“${isDefaultReplyPage ? "默认回复" : "流程"}”开头的资源`}</p>}
           </section>
-          {loaded && <section><div className="section-title"><h3>{loaded.template.meta.name}</h3><span>v{loaded.template.version}</span></div>{loaded.template.meta.description && <p className="muted">{loaded.template.meta.description}</p>}<div className="chips"><span>{loaded.template.inputs.length} 个输入</span><span>{loaded.template.dependencies.botFields.length} 个变量</span><span>{loaded.template.dependencies.media.length} 个素材</span></div>{loaded.template.dependencies.unsupported.length > 0 && <details className="issues" open><summary>存在不支持的绑定对象</summary>{loaded.template.dependencies.unsupported.map((item, index) => <p key={index}>{item.path}<br />{item.reason}</p>)}</details>}{loaded.template.inputs.length > 0 && <button className="secondary-wide" onClick={() => setView("inputs")}>填写流程变量</button>}<button className="primary" onClick={() => void applyTemplate()} disabled={Boolean(busy) || !snapshot}>应用到{targetLabel}{missingRequired ? `（缺 ${missingRequired} 项）` : ""}</button></section>}
+          {loaded && <section><div className="section-title"><h3>{loaded.template.meta.name}</h3><span>v{loaded.template.version}</span></div>{loaded.template.meta.description && <p className="muted">{loaded.template.meta.description}</p>}<div className="chips"><span>{loaded.template.inputs.length} 个输入</span><span>{loaded.template.dependencies.botFields.length} 个变量</span>{Boolean(loaded.template.dependencies.tags?.length) && <span>{loaded.template.dependencies.tags?.length} 个标签</span>}<span>{loaded.template.dependencies.media.length} 个素材</span></div>{loaded.template.dependencies.unsupported.length > 0 && <details className="issues" open><summary>存在不支持的绑定对象</summary>{loaded.template.dependencies.unsupported.map((item, index) => <p key={index}>{item.path}<br />{item.reason}</p>)}</details>}{loaded.template.inputs.length > 0 && <button className="secondary-wide" onClick={() => setView("inputs")}>填写流程变量</button>}<button className="primary" onClick={() => void applyTemplate()} disabled={Boolean(busy) || !snapshot}>应用到{targetLabel}{missingRequired ? `（缺 ${missingRequired} 项）` : ""}</button></section>}
         </div>
         <div className="flow-assistant-body page-input-view"><div className="input-intro"><strong>填写流程变量</strong><span>填写完成后直接替换{targetLabel}。</span></div>{loaded?.template.inputs.map((input) => <TemplateInputControl key={input.key} input={input} value={values[input.key] ?? {}} assets={loaded.assets} onChange={(value) => setValues((current) => ({ ...current, [input.key]: value }))} />)}<button className="primary sticky-apply" onClick={() => void applyTemplate()} disabled={Boolean(busy) || !snapshot}>应用到{targetLabel}{missingRequired ? `（缺 ${missingRequired} 项）` : ""}</button></div>
       </div></div>

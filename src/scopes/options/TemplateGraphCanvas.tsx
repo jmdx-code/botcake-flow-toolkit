@@ -157,6 +157,7 @@ function imageMime(name = ""): string {
 function kindClass(value: string): string {
   if (value.includes("条件")) return "condition";
   if (value.includes("延迟")) return "delay";
+  if (value.includes("动作")) return "action";
   if (value.includes("图片")) return "image";
   if (value.includes("音频")) return "audio";
   if (value.includes("视频")) return "video";

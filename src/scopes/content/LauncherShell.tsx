@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { DEFAULT_REPLY_EDIT_URL_PATTERN, FLOW_URL_PATTERN } from "../../shared/constants";
 import type { CommentFlowStatus } from "../../shared/types";
 import { usePersistentPosition } from "./usePersistentPosition";
+import { consumeAssistantOpenOnArrival } from "./assistant-return";
 
 const FlowAssistant = lazy(async () => {
   const module = await import("./App");
@@ -65,6 +66,10 @@ export function LauncherShell() {
   useEffect(() => {
     if (!route.isFlow) setOpen(false);
   }, [route.isFlow]);
+
+  useEffect(() => {
+    if (consumeAssistantOpenOnArrival()) setOpen(true);
+  }, [route.href]);
 
   useEffect(() => {
     if (!pendingPageSelection || !route.pageId || route.isFlow) return;

@@ -68,6 +68,10 @@ export const flowTemplateSchema = z.object({
       defaultValue: z.unknown().optional(),
       description: z.string().optional(),
     })),
+    tags: z.array(z.object({
+      name: z.string().min(1),
+      sourceId: z.string().optional(),
+    })).optional(),
     media: z.array(z.object({
       key: z.string().min(1),
       kind: z.enum(["image", "audio", "video"]),

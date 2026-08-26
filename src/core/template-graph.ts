@@ -15,7 +15,7 @@ export type TemplateGraphNode = {
   buttons: string[];
 };
 
-export type TemplateNodeKind = "message" | "condition" | "delay" | "unknown";
+export type TemplateNodeKind = "message" | "condition" | "delay" | "action" | "unknown";
 
 export type TemplateGraphEdge = {
   id: string;
@@ -257,6 +257,7 @@ function inferBlockType(block: JsonRecord): string {
   const type = stringValue(block.type);
   if (type === "condition") return "条件";
   if (type === "smart_delay") return "延迟";
+  if (type === "action") return "动作";
   const cards = Array.isArray(block.cards) ? block.cards : [];
   const plugins = cards.map((card) => stringValue(recordValue(card).plugin_id));
   if (plugins.includes("multi_image")) return "多图消息";
@@ -274,12 +275,27 @@ export function inferNodeKind(block: JsonRecord): TemplateNodeKind {
   const type = stringValue(block.type).toLocaleLowerCase();
   if (type === "condition") return "condition";
   if (type === "smart_delay" || type === "delay") return "delay";
+  if (type === "action") return "action";
   const cards = Array.isArray(block.cards) ? block.cards : [];
   if (cards.some((card) => Boolean(stringValue(recordValue(card).plugin_id)))) return "message";
   return "unknown";
 }
 
 function blockPreview(block: JsonRecord): string {
+  if (stringValue(block.type).toLocaleLowerCase() === "action") {
+    const labels: Record<string, string> = {
+      add_tag: "添加标签", remove_tag: "移除标签", block_customer: "拉黑客户",
+      active_bot: "开启机器人", deactivate_bot: "暂停机器人", sign_follow_bot: "订阅机器人",
+      cancel_sign_follow_bot: "取消订阅机器人", handover_to_page_inbox: "转交专页收件箱",
+      pass_control_back_to_bot: "交还 Botcake", report_spam: "标记垃圾信息",
+    };
+    const actions = Array.isArray(block.action) ? block.action : [];
+    const summary = actions.flatMap((value) => {
+      const action = stringValue(recordValue(value).action);
+      return action ? [labels[action] ?? action] : [];
+    }).join(" · ");
+    return shorten(summary || "动作", 92);
+  }
   let mediaName = "";
   let text = "";
   walkJson(block.cards, (value, path, parent, key) => {

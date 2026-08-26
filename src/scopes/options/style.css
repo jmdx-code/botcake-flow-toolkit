@@ -127,6 +127,7 @@ label { display: grid; gap: 5px; color: #667084; font-size: 12px; }
 .flow-node-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
 .node-kind, .entry-badge { display: inline-flex; align-items: center; height: 21px; padding: 0 7px; border-radius: 6px; font-size: 10px; font-weight: 600; }
 .node-kind { background: #edf0f5; color: #596577; }
+.kind-action { background: #e8f7f3; color: #14776c; }
 .kind-condition { background: #fff1d8; color: #986000; }
 .kind-delay { background: #e9efff; color: #3b5eb5; }
 .kind-image { background: #e9f6ef; color: #18704b; }
@@ -215,6 +216,12 @@ label { display: grid; gap: 5px; color: #667084; font-size: 12px; }
 .dependency-list strong { font-size: 12px; }
 .dependency-list span, .dependency-list small { color: #7d8695; font-size: 10px; }
 .dependency-list small { grid-column: 1 / -1; }
+.action-list { display: grid; gap: 8px; }
+.action-item { display: grid; gap: 6px; padding: 11px 12px; border: 1px solid #dce8e5; border-radius: 10px; background: #f6fbfa; }
+.action-item > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.action-item strong { color: #26364a; font-size: 13px; }
+.action-item code { color: #657384; font-size: 10px; }
+.action-item p, .action-item small { margin: 0; color: #66778a; font-size: 11px; }
 
 .condition-branch, .delay-editor { display: grid; gap: 11px; margin-bottom: 11px; padding: 12px; border: 1px solid #e1e5eb; border-radius: 10px; background: #fafbfc; }
 .condition-branch-heading, .condition-rule-title, .node-target { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

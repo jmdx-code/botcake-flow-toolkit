@@ -14,6 +14,13 @@ export interface BotField {
   [key: string]: unknown;
 }
 
+export interface BotcakeTag {
+  id: string | number;
+  name: string;
+  color?: string | null;
+  [key: string]: unknown;
+}
+
 export interface FlowSnapshot {
   identity: FlowIdentity;
   name: string;
@@ -22,6 +29,7 @@ export interface FlowSnapshot {
   isPreview?: boolean;
   isPreviewPublished?: boolean;
   botFields: BotField[];
+  tags?: BotcakeTag[];
   capturedAt: string;
 }
 
@@ -54,6 +62,11 @@ export interface BotFieldDependency {
   fieldType?: string;
   defaultValue?: unknown;
   description?: string;
+}
+
+export interface TagDependency {
+  name: string;
+  sourceId?: string;
 }
 
 export interface MediaDependency {
@@ -95,6 +108,7 @@ export interface FlowTemplateV1 {
   inputs: TemplateInput[];
   dependencies: {
     botFields: BotFieldDependency[];
+    tags?: TagDependency[];
     media: MediaDependency[];
     unsupported: UnsupportedDependency[];
   };
@@ -108,10 +122,11 @@ export interface LoadedTemplate {
 
 export interface CatalogRow {
   name: string;
-  kind: "settings" | "flow" | "defaultReply";
+  kind: "settings" | "flow" | "defaultReply" | "keyword";
   version?: string;
   url: string;
   description?: string;
+  keywords?: string[];
   enabled: boolean;
 }
 
@@ -123,7 +138,14 @@ export interface PendingFlowApply {
   targetPageId: string;
   targetFlowId: string;
   applyWelcome: boolean;
-  target: "comment" | "defaultReply";
+  target: "comment" | "defaultReply" | "keyword";
+  keyword?: {
+    id: string;
+    name: string;
+    terms: string[];
+  };
+  /** 开始自动应用前所在的 Botcake 页面；完成后返回。 */
+  returnUrl?: string;
   createdAt: number;
 }
 
@@ -140,6 +162,8 @@ export interface CompileReport {
   warnings: string[];
   createdBotFields: string[];
   mappedBotFields: Array<{ name: string; from?: string; to: string }>;
+  createdTags: string[];
+  mappedTags: Array<{ name: string; from?: string; to: string }>;
   uploadedMedia: string[];
 }
 
@@ -231,6 +255,18 @@ export interface EnsureDefaultReplyFlowResult {
   flow: { id: string; name: string };
 }
 
+export interface EnsureKeywordFlowResult {
+  createdFlow: boolean;
+  createdKeyword: boolean;
+  flow: { id: string; name: string };
+  keyword: { id: string; name: string; isActivated: boolean };
+}
+
+export interface FinalizeKeywordFlowResult {
+  flow: { id: string; name: string };
+  keyword: { id: string; name: string; isActivated: true };
+}
+
 export interface PageSettingsTemplateV1 {
   format: "botcake-page-settings-template";
   version: 1;
@@ -248,11 +284,89 @@ export interface PageSettingsTemplateV1 {
   };
 }
 
+export interface AnalyticsPage {
+  id: string;
+  name: string;
+  avatarUrl?: string;
+  platform?: string;
+}
+
+export interface AnalyticsDailyPoint {
+  date: string;
+  count: number;
+}
+
+export interface AnalyticsPageTraffic {
+  page: AnalyticsPage;
+  todayHours: number[];
+  yesterdayHours: number[];
+  daily: AnalyticsDailyPoint[];
+  todayTotal: number;
+  yesterdayTotal: number;
+  rangeTotal: number;
+  previousDaily?: AnalyticsDailyPoint[];
+  previousRangeTotal?: number;
+  previousToCurrentTimeTotal?: number;
+  gender: {
+    female: number;
+    male: number;
+    unknown: number;
+  };
+  error?: string;
+}
+
+export interface AnalyticsLogEntry {
+  page: AnalyticsPage;
+  id?: string | number;
+  code: string;
+  subcode: string;
+  description: string;
+  count: number;
+  updatedAt: string;
+}
+
+export interface TrafficDashboardData {
+  timezone: string;
+  today: string;
+  yesterday: string;
+  startDate: string;
+  endDate: string;
+  pages: AnalyticsPageTraffic[];
+  logs: AnalyticsLogEntry[];
+  fetchedAt: string;
+}
+
+export interface AnalyticsDirectoryData {
+  pages: AnalyticsPage[];
+  fetchedAt: string;
+}
+
+export interface AnalyticsPageConfigurationResult extends AnalyticsDirectoryData {
+  added: string[];
+  failed: Array<{ pageId: string; error: string }>;
+}
+
+export interface AnalyticsManagedTokenSummary {
+  id: string;
+  label: string;
+  pageCount: number;
+  pages: AnalyticsPage[];
+  addedAt: number;
+}
+
+export interface AnalyticsTokenManagementResult extends AnalyticsDirectoryData {
+  tokens: AnalyticsManagedTokenSummary[];
+  added: string[];
+  failed: Array<{ label: string; error: string }>;
+}
+
 export interface MainRequestMap {
   inspect: undefined;
   saveFlow: SaveFlowPayload;
   getBotFields: undefined;
   createBotField: { name: string; type?: string; value?: unknown; description?: string };
+  getTags: undefined;
+  createTag: { name: string };
   uploadMedia: { kind: MediaKind; name: string; mime: string; base64: string };
   getPrivateReplies: undefined;
   getCommentFlowStatus: undefined;
@@ -262,7 +376,16 @@ export interface MainRequestMap {
   ensureDefaultCommentFlow: { name?: string; enableAutoInbox?: boolean };
   ensureWelcomeFlowFromComment: { enable?: boolean };
   ensureDefaultReplyFlow: { name?: string };
+  ensureKeywordFlow: { name: string; keywords: string[] };
+  finalizeKeywordFlow: { keywordId: string; flowId: string; name: string; keywords: string[] };
   activateDefaultReply: undefined;
+  getAnalyticsPages: undefined;
+  getTrafficDashboardData: {
+    pageIds: string[];
+    timezone: string;
+    startDate: string;
+    endDate: string;
+  };
 }
 
 export interface MainResponseMap {
@@ -270,6 +393,8 @@ export interface MainResponseMap {
   saveFlow: { success: boolean; result?: unknown };
   getBotFields: BotField[];
   createBotField: BotField;
+  getTags: BotcakeTag[];
+  createTag: BotcakeTag;
   uploadMedia: Record<string, unknown>;
   getPrivateReplies: unknown[];
   getCommentFlowStatus: CommentFlowStatus;
@@ -279,7 +404,11 @@ export interface MainResponseMap {
   ensureDefaultCommentFlow: EnsureDefaultCommentFlowResult;
   ensureWelcomeFlowFromComment: EnsureWelcomeFlowResult;
   ensureDefaultReplyFlow: EnsureDefaultReplyFlowResult;
+  ensureKeywordFlow: EnsureKeywordFlowResult;
+  finalizeKeywordFlow: FinalizeKeywordFlowResult;
   activateDefaultReply: { enabled: true; usingAi: false };
+  getAnalyticsPages: AnalyticsPage[];
+  getTrafficDashboardData: TrafficDashboardData;
 }
 
 export type MainAction = keyof MainRequestMap;

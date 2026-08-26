@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createTemplateArchive, loadTemplateArchive } from "../../core/archive";
 import { assignMediaInput, detachMediaInput, inputUsageCount, plainTextToRawText, pruneUnusedTemplateInputs, reconcileTemplateInputBindings, removeUnusedTemplateInput, replaceTemplateSection, syncBlockRichTextMirrors, syncBlockTextInputBindings, syncTextInputBindings } from "../../core/template-editor";
-import { getConditionNodeView, getDelayNodeView, type ConditionRuleView } from "../../core/node-adapters";
+import { getActionNodeView, getConditionNodeView, getDelayNodeView, type ConditionRuleView } from "../../core/node-adapters";
 import {
   buildTemplateGraph,
   getBlocks,
@@ -370,6 +370,7 @@ function NodeInspector({ loaded, node, contentItems, mediaFields, botFields, mod
     <div className="inspector-scroll">
       {node.kind === "condition" ? <ConditionInspector loaded={loaded} blockIndex={node.blockIndex} onUpdate={onUpdateNodeValue} /> :
       node.kind === "delay" ? <DelayInspector loaded={loaded} blockIndex={node.blockIndex} onUpdate={onUpdateNodeValue} /> :
+      node.kind === "action" ? <ActionInspector loaded={loaded} blockIndex={node.blockIndex} /> :
       node.kind === "message" ? <>
       <SectionHeading title="内容" count={contentItems.length} />
       {contentItems.length ? contentItems.map((item) => item.kind === "button"
@@ -382,6 +383,25 @@ function NodeInspector({ loaded, node, contentItems, mediaFields, botFields, mod
       </> : <UnknownNodeInspector block={block} />}
     </div>}
   </aside>;
+}
+
+function ActionInspector({ loaded, blockIndex }: { loaded: LoadedTemplate; blockIndex: number }) {
+  const actionNode = getActionNodeView(loaded.template, blockIndex);
+  if (!actionNode) return <EmptySection text="无法读取这个动作节点，请使用节点 JSON。" />;
+  return <>
+    <SectionHeading title="执行动作" count={actionNode.actions.length} />
+    <div className="action-list">
+      {actionNode.actions.map((item) => <div className="action-item" key={item.path}>
+        <div><strong>{item.label}</strong><code>{item.action}</code></div>
+        {item.tagNames.length > 0 && <p>标签：{item.tagNames.join("、")}</p>}
+        <small>{item.tagNames.length
+          ? "导入时按名称复用目标专页标签；没有同名标签会自动创建"
+          : item.portable ? "此动作不依赖专页对象，导入时完整保留" : "尚未适配专页依赖，请检查节点 JSON"}</small>
+      </div>)}
+      {!actionNode.actions.length && <EmptySection text="这个节点没有动作。" />}
+    </div>
+    <div className="node-target default-target"><span>动作后进入</span><code>{actionNode.targetBlockKey || "未设置"}</code></div>
+  </>;
 }
 
 function ConditionInspector({ loaded, blockIndex, onUpdate }: {
@@ -417,6 +437,9 @@ function ConditionRuleEditor({ rule, index, onUpdate }: {
         <label>结束<input type="time" value={timeValue(rule.endHour, rule.endMinute)} onChange={(event) => updateTime(rule.path, "end", event.target.value, onUpdate)} /></label>
       </div>
       <div className="weekday-editor">{[1, 2, 3, 4, 5, 6, 7].map((day) => <button className={rule.weekDays.includes(day) ? "active" : ""} key={day} onClick={() => onUpdate(`${rule.path}.week_days`, rule.weekDays.includes(day) ? rule.weekDays.filter((item) => item !== day) : [...rule.weekDays, day].sort())}>{`一二三四五六日`[day - 1]}</button>)}</div>
+    </> : rule.type === "tags" ? <>
+      <div className="dependency-list">{rule.tags.map((tag) => <div key={tag}><strong>{tag}</strong><small>导入时按名称匹配；目标专页没有时自动创建</small></div>)}</div>
+      {!rule.tags.length && <EmptySection text="这个标签条件没有可识别的标签。" />}
     </> : <>
       <p className="condition-fallback">已识别条件类型；下面仅开放可安全编辑的基础值，完整结构可在节点 JSON 中修改。</p>
       {rule.values.map((field) => <label key={field.key}>{field.key}<input value={String(field.value)} onChange={(event) => onUpdate(`${rule.path}.${field.key}`, coercePrimitive(event.target.value, field.value))} /></label>)}
@@ -566,7 +589,7 @@ function TemplateSettings({ loaded, graphNodeCount, mode, editingInputKey, onMod
       <button className={mode === "botFields" ? "active" : ""} onClick={() => onModeChange("botFields")}>机器人变量 JSON</button>
     </nav>
     {section ? <div className="settings-json-panel"><JsonDraftEditor value={sectionValue} onApply={(value) => onApplySectionJson(section, value)} title={sectionTitle} description="这里只编辑一个分区；应用后会校验整份模板并同步到其他视图。" /></div> : <div className="settings-workspace">
-    <section className="settings-card"><h2>模板信息</h2><label>模板名称<input value={template.meta.name} onChange={(event) => onUpdateMeta({ name: event.target.value })} /></label><label>模板说明<textarea rows={4} value={template.meta.description ?? ""} onChange={(event) => onUpdateMeta({ description: event.target.value })} /></label><dl><div><dt>入口节点</dt><dd>{template.flow.entryBlockKey}</dd></div><div><dt>节点</dt><dd>{graphNodeCount}</dd></div><div><dt>输入项</dt><dd>{template.inputs.length}</dd></div><div><dt>机器人变量</dt><dd>{template.dependencies.botFields.length}</dd></div><div><dt>素材</dt><dd>{loaded.assets.size}</dd></div></dl></section>
+    <section className="settings-card"><h2>模板信息</h2><label>模板名称<input value={template.meta.name} onChange={(event) => onUpdateMeta({ name: event.target.value })} /></label><label>模板说明<textarea rows={4} value={template.meta.description ?? ""} onChange={(event) => onUpdateMeta({ description: event.target.value })} /></label><dl><div><dt>入口节点</dt><dd>{template.flow.entryBlockKey}</dd></div><div><dt>节点</dt><dd>{graphNodeCount}</dd></div><div><dt>输入项</dt><dd>{template.inputs.length}</dd></div><div><dt>机器人变量</dt><dd>{template.dependencies.botFields.length}</dd></div><div><dt>标签</dt><dd>{template.dependencies.tags?.length ?? 0}</dd></div><div><dt>素材</dt><dd>{loaded.assets.size}</dd></div></dl></section>
     <section className="settings-card wide"><div className="settings-card-heading"><div><h2>全部输入变量</h2><p>点击变量后在右侧栏编辑，不会离开当前设置页。</p></div><button onClick={onCleanUnusedInputs}>清理空临时变量</button></div>{template.inputs.length ? <div className="input-table">{template.inputs.map((input) => { const usage = inputUsageCount(template, input); const active = editingInputKey === input.key; return <div className={`input-summary-row ${active ? "editing" : ""}`} key={input.key}><code>[[{input.key}]]</code><strong>{input.label}</strong><span>{inputKindLabel(input.kind)}</span><span>{usage} 处使用</span><span>{input.options?.length ? `${input.options.length} 个选项` : "无预置选项"}</span><div className="input-summary-actions"><button onClick={() => onEditInput(input.key)}>{active ? "编辑中" : "编辑变量"}</button>{usage === 0 && <button className="subtle danger-text" onClick={() => onRemoveUnusedInput(input.key)}>删除</button>}</div></div>; })}</div> : <EmptySection text="还没有模板输入项，请从流程图选择文案并设置变量。" />}</section>
     <section className="settings-card wide"><h2>资源和依赖</h2><div className="settings-columns"><div><h3>内置素材</h3>{[...loaded.assets.entries()].map(([name, bytes]) => <p key={name}><span>{name}</span><small>{formatBytes(bytes.byteLength)}</small></p>)}{!loaded.assets.size && <p className="muted">没有内置素材</p>}</div><div><h3>机器人变量</h3>{template.dependencies.botFields.map((field) => <p key={`${field.sourceId}-${field.name}`}><span>{field.name}</span><small>{field.fieldType ?? "自动"}</small></p>)}{!template.dependencies.botFields.length && <p className="muted">没有机器人变量</p>}</div></div>{template.dependencies.unsupported.length > 0 && <div className="unsupported-box"><strong>需要人工处理的绑定</strong>{template.dependencies.unsupported.map((item) => <p key={`${item.path}-${item.key}`}>{item.reason}<small>{item.path}</small></p>)}</div>}</section>
     </div>}
