@@ -7,6 +7,7 @@ import { compileTemplate } from "./compiler";
 import { inferMediaMime } from "./media";
 import { flowTemplateSchema } from "./template-schema";
 import type { FlowSnapshot, LoadedTemplate } from "../shared/types";
+import { MAX_UNZIPPED_BYTES } from "../shared/constants";
 
 const snapshot: FlowSnapshot = {
   identity: { pageId: "100", flowId: "200" },
@@ -35,6 +36,17 @@ describe("template archive", () => {
     const loaded = loadTemplateArchive(bytes, "sample.zip");
     expect(loaded.template.meta.name).toBe("示例流程");
     expect(loaded.assets.get("assets/media_1.mp3")).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it("rejects a declared oversized ZIP entry before inflating it", () => {
+    const bytes = zipSync({ "template.json": strToU8("{}") });
+    const centralHeader = findSignature(bytes, [0x50, 0x4b, 0x01, 0x02]);
+    expect(centralHeader).toBeGreaterThanOrEqual(0);
+    const forged = bytes.slice();
+    new DataView(forged.buffer, forged.byteOffset, forged.byteLength)
+      .setUint32(centralHeader + 24, MAX_UNZIPPED_BYTES + 1, true);
+
+    expect(() => loadTemplateArchive(forged, "oversized.zip")).toThrow("解压后体积过大");
   });
 
   it("extracts placeholders, bot fields, and plugin media", () => {
@@ -140,6 +152,13 @@ describe("template archive", () => {
     expect(loaded.template.dependencies.unsupported).toEqual([]);
   });
 });
+
+function findSignature(bytes: Uint8Array, signature: number[]): number {
+  for (let index = 0; index <= bytes.length - signature.length; index += 1) {
+    if (signature.every((value, offset) => bytes[index + offset] === value)) return index;
+  }
+  return -1;
+}
 
 describe("public catalog", () => {
   it("converts a gid sheet URL and reads Chinese headers", () => {

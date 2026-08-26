@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { analyzeSnapshot } from "../../core/template-analyzer";
 import { createTemplateArchive, loadTemplateArchive } from "../../core/archive";
-import { normalizePublicDriveUrl, parseCatalogCsv, sheetUrlToCsv } from "../../core/catalog";
+import { isCatalogStorageRefresh, normalizePublicDriveUrl, parseCatalogCsv, sheetUrlToCsv } from "../../core/catalog";
 import { compileTemplate, uploadServiceAdapter } from "../../core/compiler";
 import { DEFAULT_REPLY_EDIT_URL_PATTERN, FLOW_URL_PATTERN } from "../../shared/constants";
 import type { CatalogRow, FlowSnapshot, ImportInputValue, LoadedTemplate, PendingFlowApply } from "../../shared/types";
@@ -94,19 +94,42 @@ export function App({ onClose }: { onClose?: () => void }) {
   }, [routeKey]);
 
   useEffect(() => {
-    let cancelled = false;
+    let disposed = false;
+    let refreshTimer = 0;
+    let requestVersion = 0;
     setCatalog([]);
     setCatalogError("");
-    if (!routeKey) return () => { cancelled = true; };
-    void chrome.storage.local.get("catalogSheetUrl").then(async (stored) => {
-      const url = typeof stored.catalogSheetUrl === "string" ? stored.catalogSheetUrl.trim() : "";
-      if (!url) return;
-      const result = await fetchCatalog(sheetUrlToCsv(url));
-      if (!cancelled) setCatalog(parseCatalogCsv(result.text).filter((row) => row.enabled));
-    }).catch((error) => {
-      if (!cancelled) setCatalogError(messageOf(error));
-    });
-    return () => { cancelled = true; };
+    if (!routeKey) return () => { disposed = true; };
+
+    const reloadCatalog = async () => {
+      const version = ++requestVersion;
+      try {
+        const stored = await chrome.storage.local.get("catalogSheetUrl");
+        const url = typeof stored.catalogSheetUrl === "string" ? stored.catalogSheetUrl.trim() : "";
+        const rows = url
+          ? parseCatalogCsv((await fetchCatalog(sheetUrlToCsv(url))).text).filter((row) => row.enabled)
+          : [];
+        if (disposed || version !== requestVersion) return;
+        setCatalog(rows);
+        setCatalogError("");
+      } catch (error) {
+        if (!disposed && version === requestVersion) setCatalogError(messageOf(error));
+      }
+    };
+    const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+      if (!isCatalogStorageRefresh(changes, areaName)) return;
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => void reloadCatalog(), 120);
+    };
+
+    void reloadCatalog();
+    chrome.storage.onChanged.addListener(listener);
+    return () => {
+      disposed = true;
+      requestVersion += 1;
+      window.clearTimeout(refreshTimer);
+      chrome.storage.onChanged.removeListener(listener);
+    };
   }, [routeKey]);
 
   const missingRequired = loaded ? countMissingRequired(loaded.template, values) : 0;

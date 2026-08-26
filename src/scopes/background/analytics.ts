@@ -7,7 +7,7 @@ import {
   enumerateIsoDates,
   parseAnalyticsTimestamp,
 } from "../../core/traffic-analytics";
-import { mergeManagedTokenPages } from "../../core/analytics-token-management";
+import { mergeManagedTokenPages, runWithTokenFallback } from "../../core/analytics-token-management";
 import type {
   AnalyticsDirectoryData,
   AnalyticsLogEntry,
@@ -20,7 +20,7 @@ import type {
 import {
   createAnalyticsManagedToken,
   mergeAnalyticsExternalTokens,
-  readAnalyticsExternalTokens,
+  readAnalyticsExternalTokenCandidates,
   readAnalyticsManagedTokens,
   writeAnalyticsManagedTokens,
   type AnalyticsManagedTokenRecord,
@@ -228,16 +228,16 @@ export class AnalyticsBackgroundService {
     if (!normalizedIds.length) return [];
     const directory = await this.getDirectory();
     const known = new Map(directory.pages.map((page) => [page.id, page]));
-    const externalTokens = await readAnalyticsExternalTokens();
+    const externalTokens = await readAnalyticsExternalTokenCandidates();
     let token = "";
     try { token = await this.getToken(); }
     catch (reason) {
-      if (normalizedIds.some((id) => !externalTokens[id])) throw reason;
+      if (normalizedIds.some((id) => !externalTokens[id]?.length)) throw reason;
     }
     if (forceRefresh) normalizedIds.forEach((id) => this.logCache.delete(id));
     const rows = await mapWithConcurrency(normalizedIds, REQUEST_CONCURRENCY, async (id) => {
       const page = known.get(id) ?? fallbackPage(id);
-      return settle(this.getLogs(page, externalTokens[id] ?? token));
+      return settle(runWithTokenFallback(tokenCandidates(externalTokens[id], token), (candidate) => this.getLogs(page, candidate), isTokenAccessError));
     });
     const failures = rows.filter((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failures.length === rows.length) {
@@ -255,23 +255,19 @@ export class AnalyticsBackgroundService {
     const periodLength = daysBetween(request.startDate, request.endDate) + 1;
     const previousEnd = addAnalyticsDays(request.startDate, -1);
     const previousStart = addAnalyticsDays(previousEnd, -(periodLength - 1));
-    const externalTokens = await readAnalyticsExternalTokens();
+    const externalTokens = await readAnalyticsExternalTokenCandidates();
     let token = "";
     try { token = await this.getToken(); }
     catch (reason) {
-      if (pageIds.some((id) => !externalTokens[id])) throw reason;
+      if (pageIds.some((id) => !externalTokens[id]?.length)) throw reason;
     }
     const earliestRequiredDate = request.comparePrevious ? previousStart : request.startDate;
     const results = await mapWithConcurrency(pages, REQUEST_CONCURRENCY, async (page) => {
       const traffic = blankTraffic(page, request.startDate, request.endDate, previousStart, previousEnd);
-      const pageToken = externalTokens[page.id] ?? token;
-      const customersResult = await settle(this.getCustomers(
-        page,
-        pageToken,
-        earliestRequiredDate,
-        request.endDate,
-        request.timezone,
-      ));
+      const candidates = tokenCandidates(externalTokens[page.id], token);
+      const customersResult = await settle(runWithTokenFallback(candidates, (candidate) => this.getCustomers(
+        page, candidate, earliestRequiredDate, request.endDate, request.timezone,
+      ), isTokenAccessError));
       if (customersResult.status === "fulfilled") {
         const customers = customersResult.value;
         const current = aggregateCustomerTraffic(customers, {
@@ -307,7 +303,9 @@ export class AnalyticsBackgroundService {
         const reason = customersResult.reason;
         traffic.error = reason instanceof Error ? reason.message : String(reason);
       }
-      const logs = request.includeLogs === false ? [] : await this.getLogs(page, pageToken).catch(() => []);
+      const logs = request.includeLogs === false
+        ? []
+        : await runWithTokenFallback(candidates, (candidate) => this.getLogs(page, candidate), isTokenAccessError).catch(() => []);
       return { traffic, logs };
     });
     return {
@@ -471,7 +469,7 @@ export class AnalyticsBackgroundService {
           await delay(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 5000) : 800);
           continue;
         }
-        throw new Error(`Botcake 接口 ${response.status}：${typeof body === "string" ? body : JSON.stringify(body)}`);
+        throw new BotcakeApiError(response.status, typeof body === "string" ? body : JSON.stringify(body));
       }
       throw new Error("Botcake 接口请求失败");
     });
@@ -516,6 +514,23 @@ export class AnalyticsBackgroundService {
       if (key.startsWith(`v2:${pageId}:`)) this.customerCache.delete(key);
     }
   }
+}
+
+class BotcakeApiError extends Error {
+  constructor(readonly status: number, detail: string) {
+    super(`Botcake 接口 ${status}：${detail}`);
+    this.name = "BotcakeApiError";
+  }
+}
+
+function isTokenAccessError(reason: unknown): boolean {
+  if (reason instanceof BotcakeApiError && (reason.status === 401 || reason.status === 403)) return true;
+  const message = reason instanceof Error ? reason.message : String(reason);
+  return /(?:invalid|expired|unauthori[sz]ed|forbidden|permission|access)[^\n]{0,40}token|token[^\n]{0,40}(?:invalid|expired|permission|access)|无权限|权限不足/i.test(message);
+}
+
+function tokenCandidates(external: string[] | undefined, primary: string): string[] {
+  return [...new Set([...(external ?? []), primary].map((value) => value.trim()).filter(Boolean))];
 }
 
 function requireAnalyticsPages(pages: AnalyticsPage[]): AnalyticsPage[] {

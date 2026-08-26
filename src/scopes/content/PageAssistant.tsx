@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type HTMLAttributes, type CSSProperties, type ReactNode } from "react";
 import { loadTemplateArchive } from "../../core/archive";
-import { normalizePublicDriveUrl, parseCatalogCsv, sheetUrlToCsv } from "../../core/catalog";
+import { isCatalogStorageRefresh, normalizePublicDriveUrl, parseCatalogCsv, sheetUrlToCsv } from "../../core/catalog";
 import {
   extractPageSettingsTemplate,
   parsePageSettingsTemplate,
@@ -33,7 +33,7 @@ export function PageAssistant({ pageId, onClose, style, dragProps }: { pageId: s
     void initialize();
     let refreshTimer = 0;
     const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
-      if (areaName !== "local" || (!changes.catalogSheetUrl && !changes.catalogCsvCache)) return;
+      if (!isCatalogStorageRefresh(changes, areaName)) return;
       window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => void reloadCatalog(), 120);
     };

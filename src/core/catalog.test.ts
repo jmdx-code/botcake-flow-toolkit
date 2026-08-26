@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { parseCatalogCsv } from "./catalog";
+import { isCatalogStorageRefresh, parseCatalogCsv } from "./catalog";
+
+describe("catalog storage refresh", () => {
+  it("reacts only to local catalog URL or cache changes", () => {
+    expect(isCatalogStorageRefresh({ catalogSheetUrl: {} }, "local")).toBe(true);
+    expect(isCatalogStorageRefresh({ catalogCsvCache: {} }, "local")).toBe(true);
+    expect(isCatalogStorageRefresh({ unrelated: {} }, "local")).toBe(false);
+    expect(isCatalogStorageRefresh({ catalogCsvCache: {} }, "sync")).toBe(false);
+  });
+});
 
 describe("parseCatalogCsv", () => {
   it("保留无表头两列表格的第一条资源", () => {

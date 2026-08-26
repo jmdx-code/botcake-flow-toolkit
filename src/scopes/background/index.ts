@@ -1,6 +1,7 @@
 import { MAX_REMOTE_FILE_BYTES } from "../../shared/constants";
 import type { BackgroundRequest, BackgroundResponse } from "../../shared/background-protocol";
 import { parseCatalogCsv } from "../../core/catalog";
+import { isAnalyticsDashboardUrl } from "../../core/analytics-refresh";
 import { AnalyticsBackgroundService } from "./analytics";
 import { readAnalyticsPrimaryToken, writeAnalyticsPrimaryToken } from "./analytics-token-vault";
 import type { AnalyticsDirectoryData, AnalyticsPage, AnalyticsPageTraffic, TrafficDashboardData } from "../../shared/types";
@@ -186,8 +187,10 @@ async function handleMessage(request: BackgroundRequest): Promise<BackgroundResp
 
 async function runAnalyticsAutoRefresh(): Promise<void> {
   const extensionUrl = chrome.runtime.getURL("src/scopes/options/index.html");
-  const tabs = await chrome.tabs.query({ url: `${extensionUrl}*` });
-  if (!tabs.some((tab) => /[?&]view=analytics(?:&|$)/.test(tab.url ?? ""))) return;
+  const tabs = await chrome.tabs.query({
+    url: [`${extensionUrl}*`, "https://botcake.io/dashboard*"],
+  });
+  if (!tabs.some((tab) => isAnalyticsDashboardUrl(tab.url ?? "", extensionUrl))) return;
   const stored = await chrome.storage.local.get(ANALYTICS_REFRESH_TARGET_KEY);
   const target = stored[ANALYTICS_REFRESH_TARGET_KEY];
   if (!isAnalyticsRefreshTarget(target)) return;

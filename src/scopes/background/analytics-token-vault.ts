@@ -1,4 +1,5 @@
 import type { AnalyticsPage } from "../../shared/types";
+import { groupManagedTokenCandidates } from "../../core/analytics-token-management";
 
 const VAULT_KEY_STORAGE = "analyticsTokenVaultKey";
 const VAULT_DATA_STORAGE = "analyticsExternalPageTokensEncrypted";
@@ -33,13 +34,9 @@ export async function writeAnalyticsPrimaryToken(token: string, expiresAt: numbe
   await chrome.storage.local.set({ [PRIMARY_TOKEN_STORAGE]: { iv: toBase64(iv), data: toBase64(new Uint8Array(data)) } satisfies EncryptedToken });
 }
 
-export async function readAnalyticsExternalTokens(): Promise<Record<string, string>> {
+export async function readAnalyticsExternalTokenCandidates(): Promise<Record<string, string[]>> {
   const managed = await readAnalyticsManagedTokens();
-  const result: Record<string, string> = {};
-  for (const record of managed) {
-    for (const page of record.pages) if (!result[page.id]) result[page.id] = record.token;
-  }
-  return result;
+  return groupManagedTokenCandidates(managed);
 }
 
 export async function readAnalyticsManagedTokens(): Promise<AnalyticsManagedTokenRecord[]> {

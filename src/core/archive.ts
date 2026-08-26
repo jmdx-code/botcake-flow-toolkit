@@ -19,8 +19,21 @@ export function createTemplateArchive(template: FlowTemplateV1, assets: Map<stri
 }
 
 export function loadTemplateArchive(bytes: Uint8Array, sourceName = "template.zip"): LoadedTemplate {
-  const files = unzipSync(bytes);
+  let declaredEntries = 0;
+  let declaredTotal = 0;
+  const files = unzipSync(bytes, {
+    filter: (file) => {
+      validateArchivePath(file.name);
+      declaredEntries += 1;
+      if (declaredEntries > MAX_ARCHIVE_FILES) throw new Error(`资源包文件过多（最多 ${MAX_ARCHIVE_FILES} 个）`);
+      declaredTotal += file.originalSize;
+      if (declaredTotal > MAX_UNZIPPED_BYTES) throw new Error("资源包解压后体积过大");
+      return true;
+    },
+  });
   const entries = Object.entries(files);
+  // Keep post-extraction validation as a second boundary in case a malformed
+  // archive declares sizes that do not match its actual decompressed output.
   if (entries.length > MAX_ARCHIVE_FILES) throw new Error(`资源包文件过多（最多 ${MAX_ARCHIVE_FILES} 个）`);
   let total = 0;
   const assets = new Map<string, Uint8Array>();

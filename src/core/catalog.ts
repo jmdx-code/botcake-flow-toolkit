@@ -1,6 +1,10 @@
 import Papa from "papaparse";
 import type { CatalogRow } from "../shared/types";
 
+export function isCatalogStorageRefresh(changes: Record<string, unknown>, areaName: string): boolean {
+  return areaName === "local" && ("catalogSheetUrl" in changes || "catalogCsvCache" in changes);
+}
+
 export function sheetUrlToCsv(url: string): string {
   const parsed = new URL(url);
   const match = parsed.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
