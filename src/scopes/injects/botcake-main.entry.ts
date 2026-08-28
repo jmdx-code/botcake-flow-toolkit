@@ -27,6 +27,7 @@ import type {
   AnalyticsPageTraffic,
   TrafficDashboardData,
 } from "../../shared/types";
+import { buildCreateBotcakeTagForm } from "../../core/botcake-tags";
 import { base64ToBytes, getFlowIdentity } from "../../shared/utils";
 import {
   addAnalyticsDays,
@@ -946,15 +947,21 @@ async function getTags(): Promise<BotcakeTag[]> {
 async function createTag(name: string): Promise<BotcakeTag> {
   const normalized = name.trim();
   if (!normalized) throw new Error("标签名称不能为空");
+  if (normalized.length > 20) throw new Error(`标签“${normalized}”超过 Botcake 的 20 字符限制`);
   const existing = (await getTags()).find((tag) => tag.name.trim().toLocaleLowerCase() === normalized.toLocaleLowerCase());
   if (existing) return existing;
   const pageId = getCurrentPageId();
   const { accessToken } = readRuntime();
-  const json = await botcakeFetch(`/api/v1/pages/${pageId}/tags`, accessToken, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: normalized }),
-  });
+  let json: any;
+  try {
+    json = await botcakeFetch(`/api/v1/pages/${pageId}/tags`, accessToken, {
+      method: "POST",
+      body: buildCreateBotcakeTagForm(normalized),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`创建标签“${normalized}”失败：${message}`);
+  }
   const direct = firstRecord(json?.tag) ?? firstRecord(json?.result) ?? firstRecord(json?.data) ?? firstRecord(json);
   const directId = direct?.id ?? direct?.tag_id;
   const directName = direct?.name ?? direct?.label;
