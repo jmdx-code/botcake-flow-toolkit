@@ -10,16 +10,19 @@ Botcake 流程助手是一款 Manifest V3 Chrome 扩展，用于制作、编辑�
 - 从本地 ZIP 或公开 Google Sheet + Google Drive 目录读取模板。
 - 使用 `[[变量]]` 定义文字、数字、随机选项和素材输入。
 - 按机器人变量名称映射目标专页字段，缺失时自动创建。
+- 按标签名称复用目标专页标签，缺失时自动创建并替换标签 ID。
 - 将素材重新上传到目标专页，并改写素材 ID、URL 和 page ID。
 - 导入前识别不支持的专页绑定对象，防止误覆盖。
 - 按专页 ID 和 Flow ID 保存最近 5 份本地备份并支持恢复。
 - 应用评论私信流程、默认回复流程、欢迎信息流程与专页设置模板。
 - 按控制台名称创建或更新 Customer 关键词流程，多个关键词使用“包含任意一个”逻辑。
 - 提供只读流程图和模板可视化编辑器。
+- 提供最多 12 个专页的引流趋势、性别统计、周期对比和最近三天错误日志。
+- 支持多个加密持久化 Token 的权限合并、故障切换和删除后即时重算。
 
 ## 安装发行版
 
-最新稳定版：[v1.0.1 Release](https://github.com/secure-artifacts/botcake-flow-toolkit/releases/)
+最新稳定版：[GitHub Releases](https://github.com/secure-artifacts/botcake-flow-toolkit/releases/latest)
 
 1. 在 GitHub Releases 下载 `botcake-flow-toolkit-vX.Y.Z.zip`。
 2. 将 ZIP 解压到一个不会移动或删除的目录。
@@ -32,7 +35,7 @@ Chrome 会按文件夹路径加载本地扩展，因此安装后不要移动该�
 如已安装 GitHub CLI，可验证下载文件确实由本仓库的 GitHub Actions 构建：
 
 ```bash
-gh attestation verify botcake-flow-toolkit-v1.0.1.zip --owner secure-artifacts
+gh attestation verify botcake-flow-toolkit-v1.0.8.zip --owner secure-artifacts
 ```
 
 ## 新手使用手册
@@ -64,12 +67,12 @@ npm run build
 
 ## 数据与权限说明
 
-- `storage`：保存控制台地址、窗口位置和本地备份。
+- `storage`：保存控制台地址、窗口位置、看板状态、本地备份和用户主动添加的加密 Token。
 - `downloads`：下载用户主动导出的模板与设置文件。
 - `scripting`：扩展重载后按需重新连接已打开的 Botcake 页面。
 - 站点权限：仅用于 Botcake、公开 Google Sheet/Drive 和 Botcake 素材域名。
 
-扩展不会内置 GitHub、Google 或 Botcake 登录令牌。请勿将含隐私数据、未脱敏专页信息或私有素材的模板上传到公共仓库。
+扩展不会内置 GitHub、Google 或 Botcake 登录令牌。用户主动加入 Token 管理的 Botcake Token 会加密保存在本机，界面只显示末尾四位；工具栏“获取 Token”只复制到剪贴板。请勿分享 Token，也不要将含隐私数据、未脱敏专页信息或私有素材的模板上传到公共仓库。
 
 ## ZIP 模板结构
 
