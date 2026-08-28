@@ -55,6 +55,7 @@ type DataRequest = {
 
 export class AnalyticsBackgroundService {
   private directoryCache?: Cached<AnalyticsPage[]>;
+  private directoryGeneration = 0;
   private customerCache = new Map<string, Cached<Record<string, unknown>[]>>();
   private logCache = new Map<string, Cached<AnalyticsLogEntry[]>>();
   private inFlight = new Map<string, Promise<unknown>>();
@@ -73,7 +74,8 @@ export class AnalyticsBackgroundService {
     if (!forceRefresh && this.directoryCache && now - this.directoryCache.fetchedAt < DIRECTORY_CACHE_TTL_MS) {
       return { pages: this.directoryCache.value, fetchedAt: new Date(this.directoryCache.fetchedAt).toISOString() };
     }
-    const key = "directory";
+    const generation = this.directoryGeneration;
+    const key = `directory:${generation}`;
     const pending = this.inFlight.get(key) as Promise<AnalyticsDirectoryData> | undefined;
     if (pending) return pending;
     const task = (async () => {
@@ -104,11 +106,16 @@ export class AnalyticsBackgroundService {
       for (const page of storedPages) if (!pageMap.has(page.id)) pageMap.set(page.id, page);
       for (const id of extraIds) if (!pageMap.has(id)) pageMap.set(id, fallbackPage(id));
       const pages = [...pageMap.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+      // Token 权限在本次读取期间发生变化时，丢弃旧目录结果并按新权限
+      // 重读，避免较慢的旧请求在删除完成后重新写回已撤销专页。
+      if (generation !== this.directoryGeneration) return this.getDirectory(true);
       this.directoryCache = { value: pages, fetchedAt: Date.now() };
       return { pages, fetchedAt: new Date(this.directoryCache.fetchedAt).toISOString() };
     })();
     this.inFlight.set(key, task);
-    try { return await task; } finally { this.inFlight.delete(key); }
+    try { return await task; } finally {
+      if (this.inFlight.get(key) === task) this.inFlight.delete(key);
+    }
   }
 
   async configurePages(entries: Array<{ pageId: string; token: string }>): Promise<AnalyticsPageConfigurationResult> {
@@ -157,7 +164,7 @@ export class AnalyticsBackgroundService {
   async getManagedTokens(): Promise<AnalyticsTokenManagementResult> {
     const records = await readAnalyticsManagedTokens();
     await this.syncManagedTokenPages(records);
-    const directory = await this.getDirectory();
+    const directory = await this.getDirectoryWithManagedFallback(records, records.length === 0);
     return { ...directory, tokens: records.map(managedTokenSummary), added: [], failed: [] };
   }
 
@@ -193,7 +200,7 @@ export class AnalyticsBackgroundService {
     if (next.length === records.length) throw new Error("没有找到需要删除的 Token");
     await writeAnalyticsManagedTokens(next);
     await this.syncManagedTokenPages(next);
-    const directory = await this.getDirectory(true);
+    const directory = await this.getDirectoryWithManagedFallback(next, true);
     return { ...directory, tokens: next.map(managedTokenSummary), added: [], failed: [] };
   }
 
@@ -393,6 +400,8 @@ export class AnalyticsBackgroundService {
     const previousPages = normalizeAnalyticsPages(stored[EXTRA_PAGES_KEY]);
     const pages = mergeManagedTokenPages(records);
     if (sameAnalyticsPages(previousPages, pages) && sameIds(previousIds, pages.map((page) => page.id))) return;
+    this.directoryGeneration += 1;
+    this.directoryCache = undefined;
     await chrome.storage.local.set({ [EXTRA_PAGE_IDS_KEY]: pages.map((page) => page.id), [EXTRA_PAGES_KEY]: pages });
     const nextIds = new Set(pages.map((page) => page.id));
     const changedIds = new Set([
@@ -403,7 +412,23 @@ export class AnalyticsBackgroundService {
       this.clearCustomerCache(id);
       this.logCache.delete(id);
     }
-    this.directoryCache = undefined;
+  }
+
+  private async getDirectoryWithManagedFallback(
+    records: AnalyticsManagedTokenRecord[],
+    forceRefresh: boolean,
+  ): Promise<AnalyticsDirectoryData> {
+    try {
+      return await this.getDirectory(forceRefresh);
+    } catch {
+      // Token 变更已经持久化，不能因为当前登录账号的目录刷新暂时失败，
+      // 就让前端继续显示已撤销 Token 的旧专页。其余托管 Token 的
+      // 重叠权限由合并结果保留；主账号目录可在后续刷新恢复。
+      const pages = mergeManagedTokenPages(records);
+      const fetchedAt = Date.now();
+      this.directoryCache = { value: pages, fetchedAt };
+      return { pages, fetchedAt: new Date(fetchedAt).toISOString() };
+    }
   }
 
   private fetchFilteredCustomerPage(
