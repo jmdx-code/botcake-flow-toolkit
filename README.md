@@ -22,7 +22,7 @@ Botcake 流程助手是一款 Manifest V3 Chrome 扩展，用于制作、编辑�
 
 ## 安装发行版
 
-最新稳定版：[GitHub Releases](https://github.com/secure-artifacts/botcake-flow-toolkit/releases/latest)
+最新稳定版：[GitHub Releases](https://github.com/jmdx-code/botcake-flow-toolkit/releases/latest)
 
 1. 在 GitHub Releases 下载 `botcake-flow-toolkit-vX.Y.Z.zip`。
 2. 将 ZIP 解压到一个不会移动或删除的目录。
@@ -35,7 +35,7 @@ Chrome 会按文件夹路径加载本地扩展，因此安装后不要移动该�
 如已安装 GitHub CLI，可验证下载文件确实由本仓库的 GitHub Actions 构建：
 
 ```bash
-gh attestation verify botcake-flow-toolkit-v1.0.8.zip --owner secure-artifacts
+gh attestation verify botcake-flow-toolkit-v1.0.9.zip --owner jmdx-code
 ```
 
 ## 新手使用手册

@@ -267,6 +267,31 @@ export interface FinalizeKeywordFlowResult {
   keyword: { id: string; name: string; isActivated: true };
 }
 
+export type BotcakeFlowApplyTarget = "comment" | "defaultReply" | "keyword";
+
+export interface PreparedBotcakeFlow {
+  target: BotcakeFlowApplyTarget;
+  snapshot: FlowSnapshot;
+  createdFlow: boolean;
+  keyword?: {
+    id: string;
+    name: string;
+    terms: string[];
+    created: boolean;
+  };
+}
+
+export interface CompleteBotcakeFlowPayload {
+  target: BotcakeFlowApplyTarget;
+  flowId: string;
+  applyWelcome?: boolean;
+  keyword?: {
+    id: string;
+    name: string;
+    terms: string[];
+  };
+}
+
 export interface PageSettingsTemplateV1 {
   format: "botcake-page-settings-template";
   version: 1;

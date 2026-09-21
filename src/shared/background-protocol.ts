@@ -1,4 +1,13 @@
-import type { MainAction, MainRequestMap } from "./types";
+import type {
+  BotFieldSpec,
+  BotcakeFlowApplyTarget,
+  CompleteBotcakeFlowPayload,
+  MainAction,
+  MainRequestMap,
+  MediaKind,
+  SaveFlowPayload,
+  UpdatePageAutomationPayload,
+} from "./types";
 
 export type BackgroundRequest =
   | { action: "fetchText"; url: string }
@@ -17,6 +26,17 @@ export type BackgroundRequest =
   | { action: "addAnalyticsManagedTokens"; tokens: string[] }
   | { action: "removeAnalyticsManagedToken"; tokenId: string }
   | { action: "setAnalyticsRefreshTarget"; target?: { pageIds: string[]; timezone: string; startDate: string; endDate: string; comparePrevious: boolean } }
+  | { action: "getBotcakePageState"; pageId: string }
+  | { action: "updateBotcakePageAutomation"; pageId: string; payload: UpdatePageAutomationPayload }
+  | { action: "ensureBotcakeBotFields"; pageId: string; fields: BotFieldSpec[] }
+  | { action: "getBotcakeBotFields"; pageId: string }
+  | { action: "createBotcakeBotField"; pageId: string; field: BotFieldSpec }
+  | { action: "getBotcakeTags"; pageId: string }
+  | { action: "createBotcakeTag"; pageId: string; name: string }
+  | { action: "uploadBotcakeMedia"; pageId: string; media: { kind: MediaKind; name: string; mime: string; base64: string } }
+  | { action: "prepareBotcakeFlow"; pageId: string; target: BotcakeFlowApplyTarget; name: string; keywords?: string[]; enableAutoInbox?: boolean }
+  | { action: "saveBotcakeFlow"; pageId: string; payload: SaveFlowPayload }
+  | { action: "completeBotcakeFlow"; pageId: string; payload: CompleteBotcakeFlowPayload }
   | { action: "callBotcakeMain"; mainAction: MainAction; payload: MainRequestMap[MainAction] };
 
 export type BackgroundResponse =

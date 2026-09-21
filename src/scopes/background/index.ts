@@ -3,6 +3,7 @@ import type { BackgroundRequest, BackgroundResponse } from "../../shared/backgro
 import { parseCatalogCsv } from "../../core/catalog";
 import { isAnalyticsDashboardUrl } from "../../core/analytics-refresh";
 import { AnalyticsBackgroundService } from "./analytics";
+import { BotcakeOperationsService } from "./botcake-operations";
 import { readAnalyticsPrimaryToken, writeAnalyticsPrimaryToken } from "./analytics-token-vault";
 import type { AnalyticsDirectoryData, AnalyticsPage, AnalyticsPageTraffic, TrafficDashboardData } from "../../shared/types";
 
@@ -39,6 +40,7 @@ type AnalyticsStoredResult = {
 };
 
 const analyticsService = new AnalyticsBackgroundService(readBotcakeAccessToken, discoverAnalyticsPages);
+const botcakeOperations = new BotcakeOperationsService(readBotcakeAccessToken);
 let analyticsPageCacheWriteTail: Promise<void> = Promise.resolve();
 
 void ensureAnalyticsRefreshAlarm();
@@ -178,6 +180,39 @@ async function handleMessage(request: BackgroundRequest): Promise<BackgroundResp
         await chrome.storage.local.remove([ANALYTICS_REFRESH_TARGET_KEY, ANALYTICS_REFRESH_RESULT_KEY]);
       }
       return { ok: true };
+    }
+    case "getBotcakePageState": {
+      return { ok: true, value: await botcakeOperations.getPageState(request.pageId) };
+    }
+    case "updateBotcakePageAutomation": {
+      return { ok: true, value: await botcakeOperations.updatePageAutomation(request.pageId, request.payload) };
+    }
+    case "ensureBotcakeBotFields": {
+      return { ok: true, value: await botcakeOperations.ensureBotFields(request.pageId, request.fields) };
+    }
+    case "getBotcakeBotFields": {
+      return { ok: true, value: await botcakeOperations.getBotFields(request.pageId) };
+    }
+    case "createBotcakeBotField": {
+      return { ok: true, value: await botcakeOperations.createBotField(request.pageId, request.field) };
+    }
+    case "getBotcakeTags": {
+      return { ok: true, value: await botcakeOperations.getTags(request.pageId) };
+    }
+    case "createBotcakeTag": {
+      return { ok: true, value: await botcakeOperations.createTag(request.pageId, request.name) };
+    }
+    case "uploadBotcakeMedia": {
+      return { ok: true, value: await botcakeOperations.uploadMedia(request.pageId, request.media) };
+    }
+    case "prepareBotcakeFlow": {
+      return { ok: true, value: await botcakeOperations.prepareFlow(request.pageId, request.target, request.name, request.keywords, request.enableAutoInbox) };
+    }
+    case "saveBotcakeFlow": {
+      return { ok: true, value: await botcakeOperations.saveFlow(request.pageId, request.payload) };
+    }
+    case "completeBotcakeFlow": {
+      return { ok: true, value: await botcakeOperations.completeFlow(request.pageId, request.payload) };
     }
     case "callBotcakeMain": {
       return callBotcakeMain(request.mainAction, request.payload);

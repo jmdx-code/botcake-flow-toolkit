@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type HTMLAttributes, type CSSProperties, type ReactNode } from "react";
 import { loadTemplateArchive } from "../../core/archive";
+import { compileTemplate, uploadServiceAdapter } from "../../core/compiler";
 import { isCatalogStorageRefresh, normalizePublicDriveUrl, parseCatalogCsv, sheetUrlToCsv } from "../../core/catalog";
 import {
   extractPageSettingsTemplate,
@@ -7,10 +8,18 @@ import {
   serializePageSettingsTemplate,
   templateToUpdatePayload,
 } from "../../core/page-settings-template";
-import type { CatalogRow, ImportInputValue, LoadedTemplate, PageAutomationState, PendingFlowApply } from "../../shared/types";
-import { callMain, downloadBytes, fetchBytes, fetchCatalog, fetchText } from "./bridge";
-import { savePendingFlowApply } from "./pending-flow-apply";
-import { captureAssistantReturnUrl } from "./assistant-return";
+import type {
+  BotField,
+  BotcakeTag,
+  CatalogRow,
+  EnsureBotFieldsResult,
+  ImportInputValue,
+  LoadedTemplate,
+  PageAutomationState,
+  PreparedBotcakeFlow,
+  UpdatePageAutomationResult,
+} from "../../shared/types";
+import { callBackground, callBackgroundValue, downloadBytes, fetchBytes, fetchCatalog, fetchText } from "./bridge";
 import { countMissingRequired, initialInputValues, TemplateInputControl } from "./TemplateInputControl";
 
 type Notice = { kind: "info" | "success" | "error"; text: string };
@@ -23,7 +32,6 @@ export function PageAssistant({ pageId, onClose, style, dragProps }: { pageId: s
   const [notice, setNotice] = useState<Notice>({ kind: "info", text: "正在读取专页和资源目录…" });
   const [applyWelcome, setApplyWelcome] = useState(true);
   const [loaded, setLoaded] = useState<LoadedTemplate>();
-  const [archiveBytes, setArchiveBytes] = useState<Uint8Array>();
   const [values, setValues] = useState<Record<string, ImportInputValue>>({});
   const [view, setView] = useState<"home" | "inputs">("home");
   const [flowTarget, setFlowTarget] = useState<FlowApplyTarget>("comment");
@@ -55,7 +63,7 @@ export function PageAssistant({ pageId, onClose, style, dragProps }: { pageId: s
       const stored = await chrome.storage.local.get(["catalogSheetUrl", "applyWelcomeWithCommentFlow"]);
       setApplyWelcome(stored.applyWelcomeWithCommentFlow !== false);
       const [nextState, rows] = await Promise.all([
-        readPageStateWithRetry(),
+        readPageStateWithRetry(pageId),
         typeof stored.catalogSheetUrl === "string" && stored.catalogSheetUrl
           ? fetchCatalog(sheetUrlToCsv(stored.catalogSheetUrl)).then((result) => parseCatalogCsv(result.text).filter((row) => row.enabled))
           : Promise.resolve([]),
@@ -91,7 +99,7 @@ export function PageAssistant({ pageId, onClose, style, dragProps }: { pageId: s
 
   async function exportSettings() {
     await run("导出专页设置", async () => {
-      const current = await callMain("getPageAutomationState", undefined, 30_000);
+      const current = await callBackgroundValue<PageAutomationState>({ action: "getBotcakePageState", pageId });
       const template = extractPageSettingsTemplate(current, `设置-${pageId}`);
       const bytes = new TextEncoder().encode(serializePageSettingsTemplate(template));
       await downloadBytes(bytes, `设置-${pageId}.json`, "application/json");
@@ -102,8 +110,8 @@ export function PageAssistant({ pageId, onClose, style, dragProps }: { pageId: s
 
   async function applySettingsText(text: string) {
     const template = parsePageSettingsTemplate(text);
-    const updated = await callMain("updatePageAutomation", templateToUpdatePayload(template), 120_000);
-    const fields = await callMain("ensureBotFields", { fields: template.settings.botFields }, 120_000);
+    const updated = await callBackgroundValue<UpdatePageAutomationResult>({ action: "updateBotcakePageAutomation", pageId, payload: templateToUpdatePayload(template) });
+    const fields = await callBackgroundValue<EnsureBotFieldsResult>({ action: "ensureBotcakeBotFields", pageId, fields: template.settings.botFields });
     setState(updated.state);
     setNotice({ kind: "success", text: `设置完成：更新 ${updated.changed.length} 项，新建机器人变量 ${fields.created.length} 个，恢复归档变量 ${fields.restored.length} 个` });
   }
@@ -123,53 +131,70 @@ export function PageAssistant({ pageId, onClose, style, dragProps }: { pageId: s
     const next = loadTemplateArchive(bytes, sourceName);
     setFlowTarget(target);
     setKeywordRow(targetKeywordRow);
-    setLoaded(next); setArchiveBytes(bytes); setValues(initialInputValues(next.template));
+    setLoaded(next); setValues(initialInputValues(next.template));
     if (next.template.inputs.length) {
       setView("inputs");
       setNotice({ kind: "success", text: `请填写 ${next.template.inputs.length} 个流程变量` });
       return;
     }
-    await queueFlowApply(next, bytes, {}, target, targetKeywordRow);
+    await applyFlowDirect(next, {}, target, targetKeywordRow);
   }
 
   async function queueSelectedFlow() {
-    if (!loaded || !archiveBytes) return;
+    if (!loaded) return;
     if (missingRequired) { setNotice({ kind: "error", text: `还有 ${missingRequired} 个必填变量未填写` }); return; }
     const label = flowTarget === "defaultReply" ? "准备默认回复流程" : flowTarget === "keyword" ? "准备关键词流程" : "准备评论私信流程";
-    await run(label, async () => queueFlowApply(loaded, archiveBytes, values, flowTarget, keywordRow));
+    await run(label, async () => applyFlowDirect(loaded, values, flowTarget, keywordRow));
   }
 
-  async function queueFlowApply(next: LoadedTemplate, bytes: Uint8Array, inputValues: Record<string, ImportInputValue>, target: FlowApplyTarget, targetKeywordRow?: CatalogRow) {
+  async function applyFlowDirect(next: LoadedTemplate, inputValues: Record<string, ImportInputValue>, target: FlowApplyTarget, targetKeywordRow?: CatalogRow) {
     const keyword = target === "keyword" ? targetKeywordRow : undefined;
     if (target === "keyword" && (!keyword?.keywords?.length || !keyword.name.trim())) {
       throw new Error("关键词模板缺少第三列关键词，多个关键词请用逗号分隔");
     }
-    let flow: { id: string; name: string };
-    let pendingKeyword: PendingFlowApply["keyword"];
-    if (target === "defaultReply") {
-      flow = (await callMain("ensureDefaultReplyFlow", { name: next.template.meta.name || "默认回复" }, 120_000)).flow;
-    } else if (target === "keyword") {
-      const destination = await callMain("ensureKeywordFlow", { name: keyword!.name, keywords: keyword!.keywords! }, 120_000);
-      flow = destination.flow;
-      pendingKeyword = { id: destination.keyword.id, name: keyword!.name, terms: keyword!.keywords! };
-    } else {
-      flow = (await callMain("ensureDefaultCommentFlow", { name: "评论", enableAutoInbox: true }, 120_000)).flow;
-    }
     if (target === "comment") await chrome.storage.local.set({ applyWelcomeWithCommentFlow: applyWelcome });
-    await savePendingFlowApply({
-      sourceName: next.sourceName,
-      archiveBytes: bytes,
-      values: inputValues,
-      targetPageId: pageId,
-      targetFlowId: flow.id,
-      applyWelcome: target === "comment" && applyWelcome,
+    const prepared = await callBackgroundValue<PreparedBotcakeFlow>({
+      action: "prepareBotcakeFlow",
+      pageId,
       target,
-      keyword: pendingKeyword,
-      returnUrl: captureAssistantReturnUrl(),
+      name: target === "keyword" ? keyword!.name : target === "defaultReply" ? (next.template.meta.name || "默认回复") : "评论",
+      keywords: keyword?.keywords,
+      enableAutoInbox: target === "comment",
     });
-    location.assign(target === "defaultReply"
-      ? `/${pageId}/default/edit#bft-open-assistant`
-      : `/${pageId}/flows/${flow.id}/content#bft-open-assistant`);
+    if (Array.isArray(prepared.snapshot.post.blocks) && prepared.snapshot.post.blocks.length) {
+      await callBackground({ action: "saveBackup", key: backupScopeKey(prepared), value: prepared.snapshot });
+    }
+    const compiled = await compileTemplate(next, inputValues, {
+      getBotFields: () => callBackgroundValue<BotField[]>({ action: "getBotcakeBotFields", pageId }),
+      createBotField: (name, type, value, description) => callBackgroundValue<BotField>({ action: "createBotcakeBotField", pageId, field: { name, type, value, description } }),
+      getTags: () => callBackgroundValue<BotcakeTag[]>({ action: "getBotcakeTags", pageId }),
+      createTag: (name) => callBackgroundValue<BotcakeTag>({ action: "createBotcakeTag", pageId, name }),
+      uploadMedia: uploadServiceAdapter((media) => callBackgroundValue<Record<string, unknown>>({ action: "uploadBotcakeMedia", pageId, media })),
+      fetchBytes,
+      fetchText,
+    }, prepared.snapshot);
+    const savePayload = target === "keyword" ? { ...compiled.payload, name: keyword!.name } : target === "defaultReply" ? { ...compiled.payload, name: "默认回复" } : compiled.payload;
+    const saved = await callBackgroundValue<{ success: boolean; result?: unknown }>({ action: "saveBotcakeFlow", pageId, payload: savePayload });
+    if (!saved.success) throw new Error("Botcake 保存流程失败");
+    await callBackgroundValue({
+      action: "completeBotcakeFlow",
+      pageId,
+      payload: {
+        target,
+        flowId: prepared.snapshot.identity.flowId,
+        applyWelcome: target === "comment" && applyWelcome,
+        ...(prepared.keyword ? { keyword: { id: prepared.keyword.id, name: prepared.keyword.name, terms: prepared.keyword.terms } } : {}),
+      },
+    });
+    const nextState = await callBackgroundValue<PageAutomationState>({ action: "getBotcakePageState", pageId });
+    setState(nextState);
+    setView("home");
+    const details = [
+      compiled.report.createdBotFields.length ? `新建变量 ${compiled.report.createdBotFields.length} 个` : "变量已映射",
+      compiled.report.createdTags.length ? `新建标签 ${compiled.report.createdTags.length} 个` : compiled.report.mappedTags.length ? "标签已映射" : "无标签动作",
+      compiled.report.uploadedMedia.length ? `上传素材 ${compiled.report.uploadedMedia.length} 个` : "无素材上传",
+    ].join("，");
+    setNotice({ kind: "success", text: `流程已直接替换：${details}，无需跳转页面` });
   }
 
   async function run(label: string, action: () => Promise<void>) {
@@ -201,7 +226,7 @@ export function PageAssistant({ pageId, onClose, style, dragProps }: { pageId: s
         {state?.defaultReply && <p className="current-flow-note">当前默认回复：{state.defaultReply.name}</p>}
       </div>
       <div className="page-assistant-body page-input-view">
-        <div className="input-intro"><strong>填写流程变量</strong><span>变量名称和说明来自资源包，完成后自动进入{flowTarget === "defaultReply" ? "默认回复" : flowTarget === "keyword" ? "关键词" : "评论私信"} Flow 并替换。</span></div>
+        <div className="input-intro"><strong>填写流程变量</strong><span>变量名称和说明来自资源包，完成后将在后台直接替换{flowTarget === "defaultReply" ? "默认回复" : flowTarget === "keyword" ? "关键词" : "评论私信"} Flow，不会跳转页面。</span></div>
         {loaded?.template.inputs.map((input) => <TemplateInputControl key={input.key} input={input} value={values[input.key] ?? {}} assets={loaded.assets} onChange={(value) => setValues((current) => ({ ...current, [input.key]: value }))} />)}
         <button className="primary sticky-apply" onClick={() => void queueSelectedFlow()} disabled={Boolean(busy) || !loaded}>应用{flowTarget === "defaultReply" ? "默认回复" : flowTarget === "keyword" ? "关键词流程" : "评论私信"}{missingRequired ? `（缺 ${missingRequired} 项）` : ""}</button>
       </div>
@@ -209,16 +234,22 @@ export function PageAssistant({ pageId, onClose, style, dragProps }: { pageId: s
   </aside>;
 }
 
-async function readPageStateWithRetry(): Promise<PageAutomationState> {
+async function readPageStateWithRetry(pageId: string): Promise<PageAutomationState> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    try { return await callMain("getPageAutomationState", undefined, 30_000); }
+    try { return await callBackgroundValue<PageAutomationState>({ action: "getBotcakePageState", pageId }); }
     catch (error) {
       lastError = error;
       if (attempt < 7) await new Promise((resolve) => window.setTimeout(resolve, 400 * (attempt + 1)));
     }
   }
   throw lastError ?? new Error("无法读取当前专页设置");
+}
+
+function backupScopeKey(prepared: PreparedBotcakeFlow): string {
+  return prepared.target === "defaultReply"
+    ? `${prepared.snapshot.identity.pageId}:defaultReply`
+    : `${prepared.snapshot.identity.pageId}:${prepared.snapshot.identity.flowId}`;
 }
 
 function ResourceSection({ title, children }: { title: string; children: ReactNode }) {

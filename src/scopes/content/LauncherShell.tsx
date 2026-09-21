@@ -1,6 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { DEFAULT_REPLY_EDIT_URL_PATTERN, FLOW_URL_PATTERN } from "../../shared/constants";
-import type { CommentFlowStatus } from "../../shared/types";
 import { usePersistentPosition } from "./usePersistentPosition";
 import { consumeAssistantOpenOnArrival } from "./assistant-return";
 
@@ -27,9 +26,6 @@ const PENDING_COMMENT_FLOW_KEY = "botcake-flow-toolkit:pending-comment-flow";
 export function LauncherShell() {
   const [route, setRoute] = useState(() => readRoute());
   const [open, setOpen] = useState(false);
-  const [commentStatus, setCommentStatus] = useState<CommentFlowStatus>();
-  const [commentError, setCommentError] = useState("");
-  const [loadingComment, setLoadingComment] = useState(false);
   const [externalLaunchRequest, setExternalLaunchRequest] = useState(0);
   const [pendingPageSelection, setPendingPageSelection] = useState(() => readPendingCommentFlow());
   const launcherPosition = usePersistentPosition("ui:launcher-position", { width: 150, height: 50 }, () => ({ x: window.innerWidth - 168, y: window.innerHeight - 68 }));
@@ -88,7 +84,6 @@ export function LauncherShell() {
     if (!route.isComment || location.hash !== "#bft-open-default-flow") return;
     history.replaceState(history.state, "", `${location.pathname}${location.search}`);
     setOpen(true);
-    void locateCommentFlow();
   }, [route.href, route.isComment]);
 
   const label = useMemo(() => route.isFlow ? "流程助手" : "专页助手", [route.isFlow]);
@@ -110,35 +105,6 @@ export function LauncherShell() {
     setOpen(false);
   }
 
-  async function locateCommentFlow() {
-    if (!route.pageId) return;
-    setLoadingComment(true);
-    setCommentError("");
-    setCommentStatus(undefined);
-    try {
-      const { callMain } = await import("./bridge");
-      let status: CommentFlowStatus | undefined;
-      let lastError: unknown;
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        try {
-          status = await callMain("getCommentFlowStatus", undefined);
-          lastError = undefined;
-          break;
-        } catch (error) {
-          lastError = error;
-          if (attempt < 4) await delay(400 * (attempt + 1));
-        }
-      }
-      if (!status) throw lastError ?? new Error("Botcake 未返回评论流程设置");
-      setCommentStatus(status);
-      if (status?.flow) navigate(`/${status.pageId}/flows/${status.flow.id}/content#bft-open-assistant`);
-    } catch (error) {
-      setCommentError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setLoadingComment(false);
-    }
-  }
-
   if (route.isFlow && open) {
     return <Suspense fallback={<div className="bft-loading-card">正在加载流程助手…</div>}>
       <FlowAssistant onClose={() => setOpen(false)} />
@@ -154,10 +120,7 @@ export function LauncherShell() {
   if (!route.isFlow && open) {
     return <aside className="bft-launch-card" style={commentPanelPosition.style}>
       <header {...commentPanelPosition.dragProps}><div><strong>评论流程</strong><small>{route.pageId ? `专页 ${route.pageId}` : "等待选择专页"}</small></div><button className="icon" aria-label="收起" onClick={closeLauncher}>×</button></header>
-      <p>{!route.pageId ? "请选择一个专页；进入专页后将自动打开它的评论流程。" : loadingComment ? "正在识别默认评论私信流程…" : commentError ? "Botcake 暂时无法读取评论流程，请稍后重试。" : commentStatus?.flow ? `正在打开：${commentStatus.flow.name}` : commentStatus ? "当前专页未设置默认评论私信流程。" : "正在准备识别评论流程…"}</p>
-      {commentError && <p className="bft-inline-error">识别失败：{commentError}</p>}
-      {route.pageId && !loadingComment && commentError && <button className="primary" onClick={() => void locateCommentFlow()}>重新识别</button>}
-      {route.pageId && !loadingComment && !commentError && commentStatus && !commentStatus.flow && <button className="primary" onClick={() => navigate(`/${route.pageId}/comment`)}>前往创建流程并开启 Auto-inbox</button>}
+      <p>请选择一个专页；进入专页后将自动打开专页助手。</p>
     </aside>;
   }
 
@@ -183,10 +146,6 @@ function readRoute(): RouteInfo {
 function navigate(path: string): void {
   if (location.pathname === path) location.reload();
   else location.assign(path);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function readPendingCommentFlow(): boolean {

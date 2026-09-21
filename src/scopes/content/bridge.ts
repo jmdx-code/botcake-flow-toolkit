@@ -39,6 +39,12 @@ export async function callBackground(request: BackgroundRequest): Promise<Backgr
   return response;
 }
 
+export async function callBackgroundValue<T>(request: BackgroundRequest): Promise<T> {
+  const response = await callBackground(request);
+  if (!("value" in response)) throw new Error("插件后台没有返回操作结果");
+  return response.value as T;
+}
+
 export async function fetchText(url: string): Promise<string> {
   const result = await callBackground({ action: "fetchText", url });
   if (!("text" in result)) throw new Error("下载结果不是文本");
