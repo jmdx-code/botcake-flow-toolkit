@@ -8,8 +8,12 @@ import type {
   SaveFlowPayload,
   UpdatePageAutomationPayload,
 } from "./types";
+import type { PendingFlowWire } from "../core/pending-flow-wire";
 
 export type BackgroundRequest =
+  | { action: "savePendingFlowApply"; task: PendingFlowWire }
+  | { action: "readPendingFlowApply"; id: string }
+  | { action: "clearPendingFlowApply"; id: string }
   | { action: "fetchText"; url: string }
   | { action: "fetchCatalog"; url: string; forceRefresh?: boolean }
   | { action: "fetchBinary"; url: string }

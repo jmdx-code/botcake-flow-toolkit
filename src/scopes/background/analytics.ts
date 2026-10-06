@@ -1,3 +1,4 @@
+import { redactCredential } from "../../core/security-errors";
 import {
   addAnalyticsDays,
   aggregateCustomerTraffic,
@@ -480,10 +481,10 @@ export class AnalyticsBackgroundService {
         const timeout = setTimeout(() => controller.abort(), 10_000);
         let response: Response;
         try {
-          response = await fetch(url, { ...init, cache: "no-store", credentials: "omit", signal: controller.signal });
+          response = await fetch(url, { ...init, cache: "no-store", credentials: "omit", signal: controller.signal, redirect: "error" });
         } catch (error) {
           if (attempt === 0) { await delay(500); continue; }
-          throw new Error(controller.signal.aborted ? "Botcake 接口连接超时" : `Botcake 接口连接失败：${error instanceof Error ? error.message : String(error)}`);
+          throw new Error(controller.signal.aborted ? "Botcake 接口连接超时" : `Botcake 接口连接失败：${redactCredential(error instanceof Error ? error.message : String(error), token)}`);
         } finally { clearTimeout(timeout); }
         const text = await response.text();
         let body: unknown;
@@ -494,7 +495,7 @@ export class AnalyticsBackgroundService {
           await delay(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 5000) : 800);
           continue;
         }
-        throw new BotcakeApiError(response.status, typeof body === "string" ? body : JSON.stringify(body));
+        throw new BotcakeApiError(response.status, redactCredential(typeof body === "string" ? body : JSON.stringify(body), token));
       }
       throw new Error("Botcake 接口请求失败");
     });

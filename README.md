@@ -35,7 +35,7 @@ Chrome 会按文件夹路径加载本地扩展，因此安装后不要移动该�
 如已安装 GitHub CLI，可验证下载文件确实由本仓库的 GitHub Actions 构建：
 
 ```bash
-gh attestation verify botcake-flow-toolkit-v1.0.9.zip --owner jmdx-code
+gh attestation verify botcake-flow-toolkit-v1.0.10.zip --owner jmdx-code
 ```
 
 ## 新手使用手册

@@ -11,7 +11,8 @@ const ANALYTICS_VIEW = new URLSearchParams(location.search).get("botcake_flow_to
 
 // The popup uses this explicit acknowledgement instead of treating any
 // message delivery as proof that the assistant UI finished mounting.
-chrome.runtime.onMessage.addListener((message: { action?: string; mainAction?: MainAction; payload?: MainRequestMap[MainAction] }, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: { action?: string; mainAction?: MainAction; payload?: MainRequestMap[MainAction] }, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id || sender.tab || !message || typeof message !== "object") return;
   if (message.action === "ensureInjected") {
     sendResponse({ ok: true, host: Boolean(document.getElementById(HOST_ID)) });
     return;

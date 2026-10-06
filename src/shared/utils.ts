@@ -57,9 +57,10 @@ export function setByPath(root: unknown, path: string, value: unknown): void {
   if (segments[0] === "$") segments.shift();
   let current = root as Record<string | number, unknown>;
   for (let i = 0; i < segments.length - 1; i += 1) {
+    if (!current || typeof current !== "object" || !Object.hasOwn(current, segments[i])) throw new Error(`无法写入路径：${path}`);
     current = current[segments[i]] as Record<string | number, unknown>;
   }
-  if (!current || !segments.length) throw new Error(`无法写入路径：${path}`);
+  if (!current || typeof current !== "object" || !segments.length) throw new Error(`无法写入路径：${path}`);
   current[segments.at(-1)!] = value;
 }
 
@@ -67,7 +68,7 @@ export function getByPath(root: unknown, path: string): unknown {
   const segments = parsePath(path);
   if (segments[0] === "$") segments.shift();
   return segments.reduce<unknown>((current, segment) => {
-    if (current == null || typeof current !== "object") return undefined;
+    if (current == null || typeof current !== "object" || !Object.hasOwn(current, segment)) return undefined;
     return (current as Record<string | number, unknown>)[segment];
   }, root);
 }
@@ -77,10 +78,16 @@ export function parsePath(path: string): Array<string | number> {
   const source = path.startsWith("$") ? path.slice(1) : path;
   const regex = /\.([A-Za-z_$][\w$]*)|\[(\d+)\]|\["((?:[^"\\]|\\.)*)"\]/g;
   let match: RegExpExecArray | null;
+  let consumed = 0;
   while ((match = regex.exec(source))) {
+    if (match.index !== consumed) throw new Error(`路径格式无效：${path}`);
+    consumed = regex.lastIndex;
     if (match[1]) segments.push(match[1]);
     else if (match[2]) segments.push(Number(match[2]));
     else segments.push(JSON.parse(`"${match[3]}"`) as string);
+  }
+  if (consumed !== source.length || segments.some((segment) => typeof segment === "string" && ["__proto__", "prototype", "constructor"].includes(segment))) {
+    throw new Error(`路径格式无效或包含原型属性：${path}`);
   }
   return segments;
 }

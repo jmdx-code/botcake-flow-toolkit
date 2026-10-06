@@ -1,4 +1,5 @@
 import { APP_ID, DEFAULT_REPLY_EDIT_URL_PATTERN } from "../../shared/constants";
+import { redactCredential } from "../../core/security-errors";
 import { isSameBotcakeTimezone, toBotcakeTimezoneValue } from "../../core/botcake-timezone";
 import type {
   BotField,
@@ -66,7 +67,7 @@ if (!window.__BOTCAKE_FLOW_TOOLKIT_BRIDGE__) {
   window.__BOTCAKE_FLOW_TOOLKIT_BRIDGE__ = true;
   window.addEventListener("message", (event: MessageEvent<MainBridgeRequest>) => {
     const message = event.data;
-    if (event.source !== window || !message || message.app !== APP_ID || message.channel !== "request") return;
+    if (event.source !== window || event.origin !== location.origin || !message || message.app !== APP_ID || message.channel !== "request" || typeof message.requestId !== "string" || typeof message.action !== "string") return;
     void handleRequest(message);
   });
 }
@@ -83,7 +84,7 @@ async function handleRequest<A extends MainAction>(request: MainBridgeRequest<A>
     response.result = await dispatch(request.action, request.payload) as MainResponseMap[A];
     response.ok = true;
   } catch (error) {
-    response.error = error instanceof Error ? error.message : String(error);
+    response.error = redactCredential(error instanceof Error ? error.message : String(error), "");
   }
   window.postMessage(response, location.origin);
 }
@@ -1363,11 +1364,11 @@ async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker:
 async function botcakeFetch(path: string, accessToken: string, init: RequestInit = {}): Promise<any> {
   const url = new URL(path, location.origin);
   url.searchParams.set("access_token", accessToken);
-  const response = await fetch(url, { ...init, credentials: "same-origin", cache: "no-store" });
+  const response = await fetch(url, { ...init, credentials: "same-origin", cache: "no-store", redirect: "error" });
   const text = await response.text();
   let body: any;
   try { body = text ? JSON.parse(text) : {}; } catch { body = text; }
-  if (!response.ok) throw new Error(`Botcake 接口 ${response.status}：${typeof body === "string" ? body : JSON.stringify(body)}`);
+  if (!response.ok) throw new Error(`Botcake 接口 ${response.status}：${redactCredential(typeof body === "string" ? body : JSON.stringify(body), accessToken)}`);
   return body;
 }
 

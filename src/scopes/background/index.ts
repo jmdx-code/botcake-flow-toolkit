@@ -1,6 +1,10 @@
 import { MAX_REMOTE_FILE_BYTES } from "../../shared/constants";
 import type { BackgroundRequest, BackgroundResponse } from "../../shared/background-protocol";
 import { parseCatalogCsv } from "../../core/catalog";
+import { readBoundedResponse } from "../../core/remote-download";
+import { isAllowedBackgroundSender } from "../../core/message-source";
+import { redactCredential } from "../../core/security-errors";
+import { savePrivatePendingFlow, readPrivatePendingFlow, clearPrivatePendingFlow } from "./pending-flow-store";
 import { isAnalyticsDashboardUrl } from "../../core/analytics-refresh";
 import { AnalyticsBackgroundService } from "./analytics";
 import { BotcakeOperationsService } from "./botcake-operations";
@@ -48,25 +52,43 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ANALYTICS_REFRESH_ALARM) void runAnalyticsAutoRefresh().catch(() => undefined);
 });
 
-chrome.runtime.onMessage.addListener((request: BackgroundRequest, _sender, sendResponse: (response: BackgroundResponse) => void) => {
-  void handleMessage(request).then(sendResponse).catch((error) => {
-    sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
+chrome.runtime.onMessage.addListener((request: BackgroundRequest, sender, sendResponse: (response: BackgroundResponse) => void) => {
+  if (!isAllowedBackgroundSender(sender, chrome.runtime.id)) {
+    sendResponse({ ok: false, error: "不允许的消息来源" });
+    return;
+  }
+  if (!request || typeof request !== "object" || typeof request.action !== "string") {
+    sendResponse({ ok: false, error: "无效的后台请求" });
+    return;
+  }
+  void handleMessage(request, sender).then(sendResponse).catch((error) => {
+    sendResponse({ ok: false, error: redactCredential(error instanceof Error ? error.message : String(error), "") });
   });
   return true;
 });
 
-async function handleMessage(request: BackgroundRequest): Promise<BackgroundResponse> {
+async function handleMessage(request: BackgroundRequest, sender: chrome.runtime.MessageSender): Promise<BackgroundResponse> {
   switch (request.action) {
+    case "savePendingFlowApply":
+    case "readPendingFlowApply":
+    case "clearPendingFlowApply": {
+      if (sender.tab?.id === undefined || sender.frameId !== 0 || new URL(sender.url ?? "").origin !== "https://botcake.io") throw new Error("流程任务只允许由 Botcake 顶层内容脚本访问");
+      if (request.action === "savePendingFlowApply") return { ok: true, value: await savePrivatePendingFlow(request.task, sender.tab.id) };
+      if (typeof request.id !== "string" || !/^[0-9a-f-]{36}$/i.test(request.id)) throw new Error("流程任务标识无效");
+      if (request.action === "readPendingFlowApply") return { ok: true, value: await readPrivatePendingFlow(request.id, sender.tab.id) ?? null };
+      await clearPrivatePendingFlow(request.id, sender.tab.id);
+      return { ok: true };
+    }
     case "fetchText": {
       const response = await safeFetch(request.url);
-      return { ok: true, text: await response.text(), contentType: response.headers.get("content-type") ?? undefined };
+      return { ok: true, text: new TextDecoder().decode(await readBoundedResponse(response, MAX_REMOTE_FILE_BYTES)), contentType: response.headers.get("content-type") ?? undefined };
     }
     case "fetchCatalog": {
       return fetchCatalog(request.url, request.forceRefresh === true);
     }
     case "fetchBinary": {
       const response = await safeFetch(request.url);
-      const bytes = new Uint8Array(await response.arrayBuffer());
+      const bytes = await readBoundedResponse(response, MAX_REMOTE_FILE_BYTES);
       if (bytes.byteLength > MAX_REMOTE_FILE_BYTES) throw new Error("远程文件超过 30MB 限制");
       return {
         ok: true,
@@ -217,6 +239,7 @@ async function handleMessage(request: BackgroundRequest): Promise<BackgroundResp
     case "callBotcakeMain": {
       return callBotcakeMain(request.mainAction, request.payload);
     }
+    default: throw new Error("不支持的后台操作");
   }
 }
 
@@ -464,7 +487,7 @@ async function fetchCatalog(url: string, forceRefresh: boolean): Promise<Backgro
   }
   try {
     const response = await safeFetch(requestUrl(url), 1);
-    const text = await response.text();
+    const text = new TextDecoder().decode(await readBoundedResponse(response, MAX_REMOTE_FILE_BYTES));
     if (!parseCatalogCsv(text).length) throw new Error("控制台 CSV 中没有可识别的设置、流程、默认回复或关键词资源");
     const entry: CatalogCacheEntry = {
       url,
@@ -532,7 +555,7 @@ async function safeFetch(url: string, maxRetries = 0): Promise<Response> {
   if (parsed.protocol !== "https:") throw new Error("只允许 HTTPS 资源");
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
-      const response = await fetch(parsed, { redirect: "follow", cache: "no-store", credentials: "omit" });
+      const response = await fetch(parsed, { redirect: "follow", cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(60_000) });
       if (!response.ok) {
         if (attempt < maxRetries && (response.status === 429 || response.status >= 500)) {
           await delay(700);

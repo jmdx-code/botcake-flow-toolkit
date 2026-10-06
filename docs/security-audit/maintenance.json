@@ -1,0 +1,208 @@
+[
+  {
+    "name": "@webextkits/messages-center",
+    "version": "1.0.1",
+    "versionPublishedAt": "2026-02-20T05:08:59.665Z",
+    "latest": "1.0.1",
+    "latestPublishedAt": "2026-02-20T05:08:59.665Z",
+    "repository": {
+      "type": "git",
+      "url": "git+https://github.com/FrontEndSharedProject/webextkits.git",
+      "directory": "packages/messages"
+    }
+  },
+  {
+    "name": "@webextkits/storage-local",
+    "version": "1.0.0",
+    "versionPublishedAt": "2025-11-07T03:09:57.368Z",
+    "latest": "1.0.0",
+    "latestPublishedAt": "2025-11-07T03:09:57.368Z"
+  },
+  {
+    "name": "@xyflow/react",
+    "version": "12.11.3",
+    "versionPublishedAt": "2026-08-12T08:41:34.330Z",
+    "latest": "12.12.0",
+    "latestPublishedAt": "2026-09-24T12:41:36.171Z",
+    "repository": {
+      "url": "git+https://github.com/xyflow/xyflow.git",
+      "type": "git",
+      "directory": "packages/react"
+    }
+  },
+  {
+    "name": "fflate",
+    "version": "0.8.3",
+    "versionPublishedAt": "2026-05-16T00:14:03.449Z",
+    "latest": "0.8.3",
+    "latestPublishedAt": "2026-05-16T00:14:03.449Z",
+    "repository": {
+      "url": "git+https://github.com/101arrowz/fflate.git",
+      "type": "git"
+    }
+  },
+  {
+    "name": "papaparse",
+    "version": "5.6.0",
+    "versionPublishedAt": "2026-08-13T12:31:51.033Z",
+    "latest": "5.7.0",
+    "latestPublishedAt": "2026-08-24T14:28:22.981Z",
+    "repository": {
+      "url": "git+https://github.com/mholt/PapaParse.git",
+      "type": "git"
+    }
+  },
+  {
+    "name": "react",
+    "version": "19.2.8",
+    "versionPublishedAt": "2026-07-21T15:41:28.716Z",
+    "latest": "19.3.0",
+    "latestPublishedAt": "2026-09-09T17:21:30.071Z",
+    "repository": {
+      "url": "git+https://github.com/react/react.git",
+      "type": "git",
+      "directory": "packages/react"
+    }
+  },
+  {
+    "name": "react-dom",
+    "version": "19.2.8",
+    "versionPublishedAt": "2026-07-21T15:41:41.267Z",
+    "latest": "19.3.0",
+    "latestPublishedAt": "2026-09-09T17:17:39.744Z",
+    "repository": {
+      "url": "git+https://github.com/react/react.git",
+      "type": "git",
+      "directory": "packages/react-dom"
+    }
+  },
+  {
+    "name": "recharts",
+    "version": "3.10.1",
+    "versionPublishedAt": "2026-07-25T15:23:05.240Z",
+    "latest": "3.10.1",
+    "latestPublishedAt": "2026-07-25T15:23:05.240Z",
+    "repository": {
+      "url": "git+https://github.com/recharts/recharts.git",
+      "type": "git"
+    }
+  },
+  {
+    "name": "zod",
+    "version": "4.4.3",
+    "versionPublishedAt": "2026-05-04T07:06:40.819Z",
+    "latest": "4.6.5",
+    "latestPublishedAt": "2026-09-13T23:25:14.644Z",
+    "repository": {
+      "url": "git+https://github.com/colinhacks/zod.git",
+      "type": "git"
+    }
+  },
+  {
+    "name": "@crxjs/vite-plugin",
+    "version": "2.7.1",
+    "versionPublishedAt": "2026-07-01T20:06:39.253Z",
+    "latest": "3.0.0",
+    "latestPublishedAt": "2026-09-24T11:45:12.331Z",
+    "repository": {
+      "url": "git+https://github.com/crxjs/chrome-extension-tools.git",
+      "type": "git",
+      "directory": "packages/vite-plugin"
+    }
+  },
+  {
+    "name": "@types/chrome",
+    "version": "0.1.43",
+    "versionPublishedAt": "2026-06-05T19:08:37.517Z",
+    "latest": "0.3.4",
+    "latestPublishedAt": "2026-09-29T02:47:44.648Z",
+    "repository": {
+      "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+      "type": "git",
+      "directory": "types/chrome"
+    }
+  },
+  {
+    "name": "@types/papaparse",
+    "version": "5.5.2",
+    "versionPublishedAt": "2025-12-13T11:01:57.309Z",
+    "latest": "5.5.2",
+    "latestPublishedAt": "2025-12-13T11:01:57.309Z",
+    "repository": {
+      "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+      "type": "git",
+      "directory": "types/papaparse"
+    }
+  },
+  {
+    "name": "@types/react",
+    "version": "19.2.18",
+    "versionPublishedAt": "2026-07-30T21:54:03.456Z",
+    "latest": "19.3.0",
+    "latestPublishedAt": "2026-09-09T18:08:49.750Z",
+    "repository": {
+      "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+      "type": "git",
+      "directory": "types/react"
+    }
+  },
+  {
+    "name": "@types/react-dom",
+    "version": "19.2.4",
+    "versionPublishedAt": "2026-07-30T21:53:05.684Z",
+    "latest": "19.3.0",
+    "latestPublishedAt": "2026-09-09T18:07:51.886Z",
+    "repository": {
+      "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+      "type": "git",
+      "directory": "types/react-dom"
+    }
+  },
+  {
+    "name": "@vitejs/plugin-react",
+    "version": "5.2.0",
+    "versionPublishedAt": "2026-03-12T14:27:45.817Z",
+    "latest": "6.1.2",
+    "latestPublishedAt": "2026-10-05T10:08:27.143Z",
+    "repository": {
+      "url": "git+https://github.com/vitejs/vite-plugin-react.git",
+      "type": "git",
+      "directory": "packages/plugin-react"
+    }
+  },
+  {
+    "name": "typescript",
+    "version": "5.9.3",
+    "versionPublishedAt": "2025-09-30T21:19:38.784Z",
+    "latest": "7.0.2",
+    "latestPublishedAt": "2026-07-08T15:55:18.431Z",
+    "repository": {
+      "url": "git+https://github.com/microsoft/TypeScript.git",
+      "type": "git"
+    }
+  },
+  {
+    "name": "vite",
+    "version": "7.3.6",
+    "versionPublishedAt": "2026-06-25T01:51:49.605Z",
+    "latest": "8.3.3",
+    "latestPublishedAt": "2026-10-06T04:10:19.326Z",
+    "repository": {
+      "url": "git+https://github.com/vitejs/vite.git",
+      "type": "git",
+      "directory": "packages/vite"
+    }
+  },
+  {
+    "name": "vitest",
+    "version": "4.1.11",
+    "versionPublishedAt": "2026-08-18T14:27:07.240Z",
+    "latest": "5.0.3",
+    "latestPublishedAt": "2026-09-30T11:30:42.429Z",
+    "repository": {
+      "url": "git+https://github.com/vitest-dev/vitest.git",
+      "type": "git",
+      "directory": "packages/vitest"
+    }
+  }
+]

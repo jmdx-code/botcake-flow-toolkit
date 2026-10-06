@@ -21,6 +21,7 @@ import type {
   UpdatePageAutomationResult,
 } from "../../shared/types";
 import { readAnalyticsExternalTokenCandidates } from "./analytics-token-vault";
+import { redactCredential } from "../../core/security-errors";
 
 const BOTCAKE_ORIGIN = "https://botcake.io";
 
@@ -481,10 +482,10 @@ export class BotcakeOperationsService {
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const response = await fetch(url, { ...init, credentials: "omit", cache: "no-store" });
+        const response = await fetch(url, { ...init, credentials: "omit", cache: "no-store", redirect: "error" });
         const text = await response.text(); let body: any;
         try { body = text ? JSON.parse(text) : {}; } catch { body = text; }
-        if (!response.ok) throw new BotcakeOperationError(response.status, typeof body === "string" ? body : JSON.stringify(body));
+        if (!response.ok) throw new BotcakeOperationError(response.status, redactCredential(typeof body === "string" ? body : JSON.stringify(body), token));
         return body;
       } catch (error) {
         lastError = error;

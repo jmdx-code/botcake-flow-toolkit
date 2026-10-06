@@ -131,7 +131,7 @@ function botCakes(pageId, sheetName, timeZone, startdate, token, pageName, endda
     var iid = String(item.id || item.psid || "").trim();
 
     if (!iid) {
-      Logger.log("跳过没有 id/psid 的记录：" + JSON.stringify(item));
+      Logger.log("跳过没有 id/psid 的记录");
       return;
     }
 
@@ -183,7 +183,10 @@ function botCakes(pageId, sheetName, timeZone, startdate, token, pageName, endda
         .setNumberFormat("@");
       sheet
         .getRange(2 + offset, 1, rows.length, BOTCAKE_COLUMNS.length)
-        .setValues(rows);
+        .setValues(rows.map(function(row) {
+          // Apps Script treats an API-supplied leading '=' as a formula.
+          return row.map(function(value) { return typeof value === "string" && value.charAt(0) === "=" ? "'" + value : value; });
+        }));
     }
   }
 
@@ -341,7 +344,8 @@ function fetchBotCakeCustomerPage(pageId, token, pageName, pageNumber, filter) {
       "filter[0][start_date]": String(filter.startSeconds),
       "filter[0][end_date]": String(filter.endSeconds)
     },
-    muteHttpExceptions: true
+    muteHttpExceptions: true,
+    followRedirects: false
   };
 
   var maxAttempts = 3;
@@ -376,6 +380,10 @@ function fetchBotCakeCustomerPage(pageId, token, pageName, pageNumber, filter) {
     }
   }
 
+  // Transport errors may echo the complete request URL (including the Token).
+  [String(token), encodeURIComponent(token)].forEach(function(value) {
+    if (value) lastError = lastError.split(value).join('[REDACTED]');
+  });
   throw new Error(
     "读取 BotCake 第 " + pageNumber + " 页失败，未写入任何新数据。原因：" + lastError
   );

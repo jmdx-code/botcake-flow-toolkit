@@ -1,46 +1,27 @@
 import type { PendingFlowApply } from "../../shared/types";
+import { decodePendingFlow, encodePendingFlow, type StoredPendingFlowWire } from "../../core/pending-flow-wire";
+import { callBackground, callBackgroundValue } from "./bridge";
 
-const DB_NAME = "botcake-flow-toolkit";
-const STORE_NAME = "pending-flow-apply";
-const SESSION_KEY = "botcake-flow-toolkit:pending-flow-apply-id";
+// Website scripts can change this pointer, but cannot change the private task.
+// Versioning deliberately invalidates legacy website-owned tasks.
+const SESSION_KEY = "botcake-flow-toolkit:private-pending-flow-id-v1";
 
 export async function savePendingFlowApply(task: Omit<PendingFlowApply, "id" | "createdAt">): Promise<string> {
-  const record: PendingFlowApply = { ...task, id: crypto.randomUUID(), createdAt: Date.now() };
-  const db = await openDatabase();
-  await requestResult(db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).put(record));
-  sessionStorage.setItem(SESSION_KEY, record.id);
-  return record.id;
+  const id = await callBackgroundValue<string>({ action: "savePendingFlowApply", task: encodePendingFlow(task) });
+  sessionStorage.setItem(SESSION_KEY, id);
+  return id;
 }
 
 export async function readPendingFlowApply(): Promise<PendingFlowApply | undefined> {
   const id = sessionStorage.getItem(SESSION_KEY);
   if (!id) return undefined;
-  const db = await openDatabase();
-  return await requestResult<PendingFlowApply | undefined>(db.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(id));
+  const task = await callBackgroundValue<StoredPendingFlowWire | null>({ action: "readPendingFlowApply", id });
+  if (!task) { sessionStorage.removeItem(SESSION_KEY); return undefined; }
+  return decodePendingFlow(task);
 }
 
 export async function clearPendingFlowApply(id?: string): Promise<void> {
-  const target = id ?? sessionStorage.getItem(SESSION_KEY) ?? "";
+  const target = id ?? sessionStorage.getItem(SESSION_KEY);
   sessionStorage.removeItem(SESSION_KEY);
-  if (!target) return;
-  const db = await openDatabase();
-  await requestResult(db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).delete(target));
-}
-
-function openDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE_NAME)) request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("无法打开流程任务存储"));
-  });
-}
-
-function requestResult<T>(request: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("流程任务存储失败"));
-  });
+  if (target) await callBackground({ action: "clearPendingFlowApply", id: target });
 }

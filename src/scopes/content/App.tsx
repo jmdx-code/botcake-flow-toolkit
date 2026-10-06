@@ -10,6 +10,7 @@ import { clearPendingFlowApply, readPendingFlowApply } from "./pending-flow-appl
 import { reloadWithAssistantOpen, requestAssistantOpenOnArrival, resolveAssistantReturnUrl } from "./assistant-return";
 import { countMissingRequired, initialInputValues, TemplateInputControl } from "./TemplateInputControl";
 import { usePersistentPosition } from "./usePersistentPosition";
+import { redactCredential } from "../../core/security-errors";
 
 type Notice = { kind: "info" | "success" | "error"; text: string };
 type BackupEntry = { storageKey: string; snapshot: FlowSnapshot; createdAt: number; size: number };
@@ -43,7 +44,7 @@ export function App({ onClose }: { onClose?: () => void }) {
       return current === next ? current : next;
     });
     const routeMessageListener = (event: MessageEvent<{ app?: string; channel?: string }>) => {
-      if (event.source === window && event.data?.app === "botcake-flow-toolkit" && event.data.channel === "route") detectRoute();
+      if (event.source === window && event.origin === location.origin && event.data?.app === "botcake-flow-toolkit" && event.data.channel === "route") detectRoute();
     };
     window.addEventListener("popstate", detectRoute);
     window.addEventListener("hashchange", detectRoute);
@@ -411,7 +412,7 @@ function safeName(value: string): string {
 }
 
 function summarizeResult(value: unknown): string {
-  try { return JSON.stringify(value).slice(0, 600) || "接口未返回详情"; }
+  try { return redactCredential(JSON.stringify(value), "") || "接口未返回详情"; }
   catch { return String(value).slice(0, 600); }
 }
 

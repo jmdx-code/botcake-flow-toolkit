@@ -22,7 +22,7 @@ export function callMain<A extends MainAction>(
     }, timeoutMs);
     const listener = (event: MessageEvent<MainBridgeResponse<A>>) => {
       const response = event.data;
-      if (event.source !== window || response?.app !== APP_ID || response.channel !== "response" || response.requestId !== requestId) return;
+      if (event.source !== window || event.origin !== location.origin || response?.app !== APP_ID || response.channel !== "response" || response.requestId !== requestId || response.action !== action) return;
       window.clearTimeout(timeout);
       window.removeEventListener("message", listener);
       if (response.ok) resolve(response.result as MainResponseMap[A]);

@@ -37,10 +37,10 @@ export function LauncherShell() {
       setRoute((current) => current.href === next.href ? current : next);
     };
     const routeMessage = (event: MessageEvent<{ app?: string; channel?: string }>) => {
-      if (event.source === window && event.data?.app === "botcake-flow-toolkit" && event.data.channel === "route") update();
+      if (event.source === window && event.origin === location.origin && event.data?.app === "botcake-flow-toolkit" && event.data.channel === "route") update();
     };
-    const runtimeMessage = (message: { action?: string }) => {
-      if (message.action === "togglePanel") setExternalLaunchRequest((value) => value + 1);
+    const runtimeMessage = (message: { action?: string }, sender: chrome.runtime.MessageSender) => {
+      if (sender.id === chrome.runtime.id && !sender.tab && message?.action === "togglePanel") setExternalLaunchRequest((value) => value + 1);
     };
     window.addEventListener("popstate", update);
     window.addEventListener("hashchange", update);
